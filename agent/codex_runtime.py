@@ -357,6 +357,13 @@ def run_codex_app_server_turn(
     if turn.projected_messages:
         messages.extend(turn.projected_messages)
 
+    # The app-server path returns before the default conversation loop's
+    # terminal persistence block. Flush the complete projection here so the
+    # canonical Hermes transcript contains assistant/tool events for handoff,
+    # search, restart recovery, and audit. The user row was crash-persisted in
+    # the shared turn prologue; identity-based DB flushing makes this idempotent.
+    agent._persist_session(messages)
+
     if turn.thread_id:
         agent._codex_resume_thread_id = turn.thread_id
 

@@ -233,6 +233,21 @@ class TestRunConversationCodexPath:
                  and m.get("content") == "echo: hello"]
         assert final, f"expected final assistant message in {msgs}"
 
+    def test_complete_projection_is_persisted(self, fake_session):
+        agent = _make_codex_agent()
+        agent._persist_session = MagicMock()
+
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            result = agent.run_conversation("hello")
+
+        persisted = agent._persist_session.call_args.args[0]
+        assert persisted is result["messages"]
+        assert any(
+            message.get("role") == "assistant"
+            and message.get("content") == "echo: hello"
+            for message in persisted
+        )
+
     def test_projected_messages_are_synced_to_external_memory(self, fake_session):
         agent = _make_codex_agent()
         agent._memory_manager = MagicMock()
