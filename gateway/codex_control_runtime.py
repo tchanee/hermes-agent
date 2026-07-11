@@ -97,11 +97,21 @@ class CodexControlRuntime:
             binding
             and binding["session_id"] == session_id
             and binding["state"] == "active"
-            and binding["policy_revision"] != policy_revision
         ):
+            # A binding identifies continuity, not a portable app-server
+            # rollout. Scoped CODEX_HOME is deleted with the cached agent and
+            # Codex cannot resume that thread from a replacement process
+            # ("no rollout found"). Any fresh AIAgent therefore reseeds from a
+            # verified Hermes handoff. Cache hits never call prepare_session,
+            # so healthy in-process threads still persist across normal turns.
             self.prepare_reseed(
                 session_key=session_key, session_id=session_id,
-                generation=int(binding["generation"]), reason="policy_change",
+                generation=int(binding["generation"]),
+                reason=(
+                    "policy_change"
+                    if binding["policy_revision"] != policy_revision
+                    else "runtime_recovery"
+                ),
             )
             binding = self.store.get_thread_binding(session_key)
         resume = None
@@ -110,11 +120,7 @@ class CodexControlRuntime:
         if binding and binding["session_id"] == session_id:
             expected_generation = int(binding["generation"])
             expected_thread = str(binding["thread_id"])
-            if binding["policy_revision"] == policy_revision and binding["state"] == "active":
-                resume = expected_thread
-                target_generation = expected_generation
-            else:
-                target_generation = expected_generation + 1
+            target_generation = expected_generation + 1
         else:
             # A new Hermes session must never inherit the old topic binding.
             if binding:

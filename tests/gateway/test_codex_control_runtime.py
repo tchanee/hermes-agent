@@ -58,7 +58,7 @@ def test_first_session_starts_fresh_and_binds_once(runtime):
     assert not prepared.codex_home.exists()
 
 
-def test_same_policy_resumes_but_policy_change_reseeds(runtime):
+def test_fresh_agent_safely_reseeds_even_when_policy_is_unchanged(runtime):
     first = runtime.prepare_session(
         session_key="topic", session_id="s1", policy_revision="r1"
     )
@@ -67,16 +67,21 @@ def test_same_policy_resumes_but_policy_change_reseeds(runtime):
     resumed = runtime.prepare_session(
         session_key="topic", session_id="s1", policy_revision="r1"
     )
-    assert resumed.resume_thread_id == "thread-1"
-    assert resumed.persist_thread("thread-1")
+    assert resumed.resume_thread_id is None
+    assert resumed.generation == 2
+    assert resumed.persist_thread("thread-2")
     resumed.cleanup()
     reseed = runtime.prepare_session(
         session_key="topic", session_id="s1", policy_revision="r2"
     )
     assert reseed.resume_thread_id is None
-    assert reseed.generation == 2
-    assert reseed.persist_thread("thread-2")
+    assert reseed.generation == 3
+    assert reseed.persist_thread("thread-3")
     reseed.cleanup()
+    lineage = runtime.store.get_thread_lineage(session_key="topic", session_id="s1")
+    assert [row["reason"] for row in lineage] == [
+        "runtime_recovery", "policy_change"
+    ]
 
 
 def test_new_hermes_session_does_not_inherit_topic_thread(runtime):
