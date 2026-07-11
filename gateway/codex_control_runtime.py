@@ -60,7 +60,7 @@ class CodexControlRuntime:
         self.handoffs = CodexHandoffService(store=self.store, session_db=session_db)
         context = CodexContextService(
             memory_store=memory, session_db=session_db, handoffs=self.handoffs,
-            delegations=self.delegations,
+            delegations=self.delegations, audit_store=self.store,
         )
         self.memory = CodexMemoryService(store=self.store, memory_store=memory)
         self.services = CodexServicesService()
