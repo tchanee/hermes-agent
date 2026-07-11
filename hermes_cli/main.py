@@ -9101,9 +9101,29 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 text=True,
             )
             if pull_result.returncode != 0:
-                # ff-only failed — local and remote have diverged (e.g. upstream
-                # force-pushed or rebase).  Since local changes are already
-                # stashed, reset to match the remote exactly.
+                # Never hard-reset commits that exist only in the local
+                # checkout. Customized installations must use a transactional
+                # integration/rebase path so an ordinary update cannot silently
+                # erase their durable patches.
+                local_ahead = _count_commits_between(
+                    git_cmd, PROJECT_ROOT, f"origin/{branch}", "HEAD"
+                )
+                if local_ahead > 0:
+                    print()
+                    print(
+                        f"✗ Update stopped: this checkout has {local_ahead} "
+                        "local commit(s) not in the update branch."
+                    )
+                    print("  No commits were reset or discarded.")
+                    print(
+                        "  Integrate upstream transactionally, then retry; "
+                        "customized installs can use "
+                        "scripts/update-preserving-local-commits.sh."
+                    )
+                    sys.exit(2)
+
+                # No local-only commits remain, so this is an upstream
+                # force-push/rebase and resetting to the fetched branch is safe.
                 print(
                     "  ⚠ Fast-forward not possible (history diverged), resetting to match remote..."
                 )
