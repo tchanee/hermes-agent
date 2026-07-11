@@ -55,6 +55,7 @@ class CodexControlRuntime:
         self.gateway_start = gateway_start
         self.runtime_root = self.hermes_home / "runtime" / "codex-control"
         self.store = CodexControlStore(self.runtime_root / "control-v2.db")
+        self.store.repair_interrupted_batch_states()
         memory = load_on_disk_store()
         self.delegations = CodexDelegationService(store=self.store)
         self.handoffs = CodexHandoffService(store=self.store, session_db=session_db)

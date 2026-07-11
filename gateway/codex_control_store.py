@@ -840,6 +840,46 @@ class CodexControlStore:
             )
             return event_id
 
+    def repair_interrupted_batch_states(self) -> int:
+        """Repair legacy all-interrupted batches misclassified as errors."""
+        repaired = 0
+        with self.transaction() as conn:
+            rows = conn.execute(
+                "SELECT * FROM control_delegations WHERE state='error' AND result_json IS NOT NULL"
+            ).fetchall()
+            for row in rows:
+                try:
+                    result = json.loads(row["result_json"])
+                    children = (result.get("result") or {}).get("results") or []
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    continue
+                if not children or not all(
+                    isinstance(child, dict)
+                    and child.get("status") == "interrupted"
+                    for child in children
+                ):
+                    continue
+                result["terminal_state"] = "interrupted"
+                conn.execute(
+                    "UPDATE control_delegations SET state='interrupted',result_json=?,updated_at=? WHERE delegation_id=? AND state='error'",
+                    (canonical_json(result), time.time(), row["delegation_id"]),
+                )
+                self._insert_audit(
+                    conn,
+                    event_type="delegation_terminal_repaired",
+                    principal_id=row["principal_id"],
+                    profile=row["profile"],
+                    session_id=row["session_id"],
+                    generation=int(row["generation"]),
+                    detail={
+                        "delegation_id": row["delegation_id"],
+                        "from": "error",
+                        "to": "interrupted",
+                    },
+                )
+                repaired += 1
+        return repaired
+
     def list_pending_outbox(self) -> list[dict[str, Any]]:
         conn = self._connect()
         try:

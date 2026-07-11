@@ -446,6 +446,36 @@ def test_delegate_task_background_batch_runs_as_one_unit(monkeypatch):
     assert _drain_one() is None
 
 
+def test_background_batch_preserves_all_interrupted_terminal_state():
+    observed = []
+
+    def observer(record, result, status):
+        observed.append((record["delegation_id"], status))
+
+    ad.register_lifecycle_observer(observer)
+    dispatched = ad.dispatch_async_delegation_batch(
+        goals=["wait for cancellation"],
+        context=None,
+        toolsets=None,
+        role="leaf",
+        model="m",
+        session_key="topic",
+        runner=lambda: {
+            "results": [{
+                "status": "interrupted",
+                "exit_reason": "interrupted",
+                "summary": "cancelled",
+            }],
+            "total_duration_seconds": 0.1,
+        },
+    )
+
+    evt = _drain_one()
+    assert evt["delegation_id"] == dispatched["delegation_id"]
+    assert evt["status"] == "interrupted"
+    assert observed == [(dispatched["delegation_id"], "interrupted")]
+
+
 def test_model_dispatch_forces_background():
     """The MODEL-facing dispatch path forces background=True for any top-level
     delegation (single task OR batch), and keeps it off for an orchestrator

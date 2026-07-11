@@ -1,8 +1,38 @@
 import threading
+import json
 
 import pytest
 
 from gateway.codex_control_store import CodexControlStore, IdempotencyConflict
+
+
+def test_repair_only_reclassifies_proven_all_interrupted_batches(tmp_path):
+    store = CodexControlStore(tmp_path / "control.db")
+    inbox = store.accept_request(
+        principal_id="p", profile="o", session_id="s", generation=1,
+        method="workers.spawn", idempotency_key="k", payload={"goal": "g"},
+    )
+    row = store.create_delegation(
+        inbox_id=inbox["id"],
+        principal={"principal_id": "p", "profile": "o", "session_id": "s", "generation": 1},
+        session_key="topic", delegation_id="deleg_interrupted", goal="g",
+        context=None, toolsets=[], role="leaf", importance="routine",
+        model_policy="Terra/default", policy_reason="routine",
+    )
+    store.update_delegation_state(
+        row["delegation_id"], state="error",
+        result={
+            "terminal_state": "error",
+            "result": {"results": [{"status": "interrupted"}]},
+        },
+    )
+
+    assert store.repair_interrupted_batch_states() == 1
+    repaired = store.get_delegation(row["delegation_id"])
+    assert repaired["state"] == "interrupted"
+    assert json.loads(repaired["result_json"])["terminal_state"] == "interrupted"
+    assert store.repair_interrupted_batch_states() == 0
+    assert store.list_audit(session_id="s")[-1]["event_type"] == "delegation_terminal_repaired"
 
 
 def test_request_idempotency_and_hash_conflict(tmp_path):
