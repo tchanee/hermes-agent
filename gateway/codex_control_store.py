@@ -292,6 +292,7 @@ class CodexControlStore:
                     toolsets_json TEXT NOT NULL,
                     role TEXT NOT NULL CHECK(role IN ('leaf','orchestrator')),
                     importance TEXT NOT NULL CHECK(importance IN ('routine','important')),
+                    worker_runtime TEXT NOT NULL DEFAULT 'hermes' CHECK(worker_runtime IN ('codex','hermes')),
                     model_policy TEXT NOT NULL,
                     policy_reason TEXT NOT NULL,
                     state TEXT NOT NULL CHECK(state IN ('prepared','running','pending_delivery','completed','error','interrupted','cancel_requested')),
@@ -347,6 +348,14 @@ class CodexControlStore:
             if "foreground_message_id" not in capability_columns:
                 conn.execute(
                     "ALTER TABLE control_capabilities ADD COLUMN foreground_message_id TEXT"
+                )
+            delegation_columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(control_delegations)")
+            }
+            if "worker_runtime" not in delegation_columns:
+                conn.execute(
+                    "ALTER TABLE control_delegations ADD COLUMN worker_runtime "
+                    "TEXT NOT NULL DEFAULT 'hermes' CHECK(worker_runtime IN ('codex','hermes'))"
                 )
         finally:
             conn.close()
@@ -800,7 +809,8 @@ class CodexControlStore:
     def create_delegation(
         self, *, inbox_id: int, principal: dict[str, Any], session_key: str,
         delegation_id: str, goal: str, context: Optional[str], toolsets: list[str],
-        role: str, importance: str, model_policy: str, policy_reason: str,
+        role: str, importance: str, worker_runtime: str = "hermes",
+        model_policy: str = "Terra/default", policy_reason: str = "routine",
     ) -> dict[str, Any]:
         now = time.time()
         with self.transaction() as conn:
@@ -812,12 +822,12 @@ class CodexControlStore:
             conn.execute(
                 """INSERT INTO control_delegations
                 (delegation_id,inbox_id,principal_id,profile,session_key,session_id,
-                 generation,goal,context,toolsets_json,role,importance,model_policy,
+                 generation,goal,context,toolsets_json,role,importance,worker_runtime,model_policy,
                  policy_reason,state,created_at,updated_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'prepared',?,?)""",
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'prepared',?,?)""",
                 (delegation_id, inbox_id, principal["principal_id"], principal["profile"],
                  session_key, principal["session_id"], principal["generation"], goal,
-                 context, canonical_json(toolsets), role, importance, model_policy,
+                 context, canonical_json(toolsets), role, importance, worker_runtime, model_policy,
                  policy_reason, now, now),
             )
             return dict(conn.execute(

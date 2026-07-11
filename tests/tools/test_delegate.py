@@ -1764,6 +1764,37 @@ class TestDelegationProviderIntegration(unittest.TestCase):
 
     @patch("tools.delegate_tool._load_config")
     @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_governed_worker_runtime_and_toolsets_reach_child(self, mock_creds, mock_cfg):
+        mock_cfg.return_value = {
+            "max_iterations": 45, "model": "gpt-5.6-terra",
+            "provider": "openai-codex", "hermes_worker_api_mode": "codex_responses",
+        }
+        mock_creds.return_value = {
+            "model": "gpt-5.6-terra", "provider": "openai-codex",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "oauth", "api_mode": "codex_responses",
+        }
+        parent = _make_mock_parent(depth=0)
+
+        with patch("tools.delegate_tool._build_child_agent") as mock_build, \
+             patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_build.return_value = MagicMock()
+            mock_run.return_value = {
+                "task_index": 0, "status": "completed", "summary": "Done",
+                "api_calls": 1, "duration_seconds": 1.0,
+            }
+            delegate_task(goal="Inspect code", toolsets=["terminal"],
+                          worker_runtime="codex", parent_agent=parent)
+            self.assertEqual(mock_build.call_args.kwargs["override_api_mode"], "codex_app_server")
+            self.assertEqual(mock_build.call_args.kwargs["toolsets"], ["terminal"])
+
+            delegate_task(goal="Inspect schedules", toolsets=["cronjob"],
+                          worker_runtime="hermes", parent_agent=parent)
+            self.assertEqual(mock_build.call_args.kwargs["override_api_mode"], "codex_responses")
+            self.assertEqual(mock_build.call_args.kwargs["toolsets"], ["cronjob"])
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
     def test_model_only_no_provider_inherits_parent_credentials(self, mock_creds, mock_cfg):
         """Setting only model (no provider) changes model but keeps parent credentials."""
         mock_cfg.return_value = {

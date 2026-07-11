@@ -58,9 +58,11 @@ def test_spawn_is_detached_idempotent_and_routine_by_default(service, monkeypatc
     second = workers.spawn(spawn_params(), principal())
     assert first["delegation_id"] == second["delegation_id"]
     assert first["model_policy"] == "Terra/default"
+    assert first["worker_runtime"] == "codex"
     assert len(calls) == 1
     assert calls[0]["background"] is True
     assert calls[0]["tier"] == "routine"
+    assert calls[0]["worker_runtime"] == "codex"
     assert calls[0]["parent_agent"] is parent
 
     with pytest.raises(IdempotencyConflict):
@@ -87,6 +89,25 @@ def test_only_explicit_important_work_uses_important_tier(service, monkeypatch):
     )
     assert captured["tier"] == "important"
     assert result["model_policy"] == "Sol/xhigh"
+    assert result["worker_runtime"] == "codex"
+
+
+def test_hermes_native_toolsets_force_hermes_runtime(service, monkeypatch):
+    workers, _store = service
+    workers.bind_parent("s1", 2, Parent())
+    captured = {}
+
+    def fake_delegate_task(**kwargs):
+        captured.update(kwargs)
+        return json.dumps({"status": "dispatched", "delegation_id": kwargs["control_delegation_id"]})
+
+    monkeypatch.setattr("tools.delegate_tool.delegate_task", fake_delegate_task)
+    result = workers.spawn(
+        spawn_params(toolsets=["terminal", "cronjob"], idempotency_key="native-1"),
+        principal(),
+    )
+    assert result["worker_runtime"] == "hermes"
+    assert captured["worker_runtime"] == "hermes"
 
 
 def test_workers_are_generation_scoped_and_steer_cancel_are_targeted(service, monkeypatch):

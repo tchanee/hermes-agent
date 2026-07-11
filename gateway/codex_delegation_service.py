@@ -20,6 +20,16 @@ _IMPORTANT_SIGNALS = {
     "complex", "rigorous", "audit", "review", "refactor", "multi-file",
 }
 
+_HERMES_NATIVE_TOOLSETS = frozenset({"cronjob", "kanban", "skills"})
+
+
+def govern_worker_runtime(toolsets: list[str]) -> tuple[str, str]:
+    """Keep native Hermes services in Hermes; run general workers in Codex."""
+    native = sorted({item.strip().lower() for item in toolsets} & _HERMES_NATIVE_TOOLSETS)
+    if native:
+        return "hermes", "requires Hermes-native toolsets: " + ", ".join(native)
+    return "codex", "general detached work defaults to Codex"
+
 
 def govern_importance(
     goal: str, requested: str, toolsets: list[str], user_text: str,
@@ -64,6 +74,7 @@ class CodexDelegationService:
     ) -> Optional[str]:
         if self.store.get_delegation(str(record.get("delegation_id") or "")) is None:
             return None
+        durable = self.store.get_delegation(str(record.get("delegation_id") or "")) or {}
         terminal = status if status in {"completed", "error", "interrupted"} else "error"
         payload = {
             "type": "async_delegation",
@@ -74,6 +85,7 @@ class CodexDelegationService:
             "goal": record.get("goal", ""), "goals": record.get("goals"),
             "context": record.get("context"), "toolsets": record.get("toolsets"),
             "role": record.get("role"), "model": result.get("model") or record.get("model"),
+            "worker_runtime": durable.get("worker_runtime", "hermes"),
             "status": terminal, "summary": result.get("summary"),
             "error": result.get("error"), "api_calls": result.get("api_calls", 0),
             "duration_seconds": result.get("duration_seconds"),
@@ -154,12 +166,14 @@ class CodexDelegationService:
         governed_importance, policy_reason = govern_importance(
             goal, importance, toolsets, user_text
         )
+        worker_runtime, runtime_reason = govern_worker_runtime(toolsets)
         if role == "orchestrator" and governed_importance != "important":
             role = "leaf"
             policy_reason += "; orchestrator role downgraded to leaf"
         payload = {"goal": goal, "context": context, "toolsets": toolsets,
                    "role": role, "requested_importance": importance,
                    "governed_importance": governed_importance,
+                   "worker_runtime": worker_runtime,
                    "user_evidence_hash": __import__("hashlib").sha256(user_text.encode()).hexdigest()}
         inbox = self.store.accept_request(
             principal_id=principal["principal_id"], profile=principal["profile"],
@@ -178,7 +192,8 @@ class CodexDelegationService:
             session_key=principal["session_key"], delegation_id=delegation_id,
             goal=goal, context=context, toolsets=toolsets, role=role,
             importance=governed_importance,
-            model_policy="Sol/xhigh" if governed_importance == "important" else "Terra/default",
+            worker_runtime=worker_runtime,
+            model_policy=("Sol/xhigh" if governed_importance == "important" else "Terra/default"),
             policy_reason=policy_reason,
         )
         self.store.record_audit(
@@ -186,14 +201,15 @@ class CodexDelegationService:
             profile=principal["profile"], session_id=principal["session_id"],
             generation=int(principal["generation"]),
             detail={"delegation_id": delegation_id, "requested": importance,
-                    "governed": governed_importance, "reason": policy_reason},
+                    "governed": governed_importance, "reason": policy_reason,
+                    "worker_runtime": worker_runtime, "runtime_reason": runtime_reason},
         )
 
         from tools.delegate_tool import delegate_task
         raw = delegate_task(
             goal=goal, context=context, toolsets=toolsets or None, role=role,
             tier=governed_importance, background=True, parent_agent=parent,
-            control_delegation_id=delegation_id,
+            control_delegation_id=delegation_id, worker_runtime=worker_runtime,
         )
         dispatch = json.loads(raw)
         if dispatch.get("status") != "dispatched":
@@ -319,7 +335,7 @@ class CodexDelegationService:
     def _public(row: dict[str, Any]) -> dict[str, Any]:
         return {key: row.get(key) for key in (
             "delegation_id", "goal", "role", "importance", "model_policy",
-            "policy_reason", "state", "created_at", "updated_at",
+            "policy_reason", "worker_runtime", "state", "created_at", "updated_at",
         )}
 
     @staticmethod

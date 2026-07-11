@@ -2390,6 +2390,8 @@ def delegate_task(
     background: Optional[bool] = None,
     parent_agent=None,
     control_delegation_id: Optional[str] = None,
+    toolsets: Optional[List[str]] = None,
+    worker_runtime: Optional[str] = None,
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks.
@@ -2537,13 +2539,22 @@ def delegate_task(
                 creds = _resolve_delegation_credentials(tier_cfg, parent_agent)
             except ValueError as exc:
                 return tool_error(str(exc))
+            runtime = (worker_runtime or "").strip().lower()
+            if runtime == "codex":
+                creds["api_mode"] = "codex_app_server"
+            elif runtime == "hermes":
+                creds["api_mode"] = str(
+                    cfg.get("hermes_worker_api_mode") or "codex_responses"
+                ).strip().lower()
+            elif runtime:
+                return tool_error("worker_runtime must be codex or hermes")
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
                 context=t.get("context"),
-                # Subagents always inherit the parent's toolsets; the model
-                # cannot choose or narrow them (no model-facing toolsets arg).
-                toolsets=None,
+                # This argument is internal-only. The gateway may narrow a
+                # governed worker, but the model-facing tool schema cannot.
+                toolsets=t.get("toolsets") or toolsets,
                 model=creds["model"],
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
@@ -2916,7 +2927,7 @@ def delegate_task(
             context=context,
             # Metadata for the completion block only; subagents inherit the
             # parent's toolsets (no model-facing toolsets arg).
-            toolsets=None,
+            toolsets=toolsets,
             role=top_role,
             model=creds["model"],
             session_key=_session_key,

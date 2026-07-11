@@ -69,5 +69,5 @@ def test_handoff_includes_durable_active_worker_handles(service):
     active = json.loads(row["payload_json"])["active_workers"]
     assert active == [{
         "delegation_id": "deleg_1", "goal": "Finish the audit",
-        "importance": "important", "state": "prepared",
+        "importance": "important", "state": "prepared", "worker_runtime": "hermes",
     }]

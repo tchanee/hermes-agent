@@ -1,5 +1,10 @@
 # Hybrid Codex Topic Runtime
 
+> Historical pilot design. Production now defaults foreground Telegram topics
+> and general detached workers to Codex. Hermes still owns the gateway and
+> native services; requests requiring `cronjob`, `kanban`, or `skills` remain
+> Hermes-backed. See `docs/durable-local-updates.md`.
+
 Status: implemented, activated for topic 7351, and live-verified 2026-07-11
 
 ## Objective

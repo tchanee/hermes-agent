@@ -52,7 +52,8 @@ class CodexHandoffService:
         workers = self.store.list_delegations(session_id=session_id, generation=generation)
         active = [
             {"delegation_id": row["delegation_id"], "goal": row["goal"][:MAX_ITEM_CHARS],
-             "state": row["state"], "importance": row["importance"]}
+             "state": row["state"], "importance": row["importance"],
+             "worker_runtime": row.get("worker_runtime", "hermes")}
             for row in workers if row["state"] in {
                 "prepared", "running", "pending_delivery", "cancel_requested"
             }
