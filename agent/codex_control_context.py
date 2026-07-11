@@ -68,8 +68,12 @@ def render_codex_stable_policy(
         "for status, steering, cancellation, and ordinary conversation. Routine "
         "workers are the default; the gateway independently decides whether an "
         "important request qualifies for Sol/xhigh. Do not poll or wait for a "
-        "detached worker. Hermes service mutations that lack a typed control API "
-        "are unavailable; never claim they succeeded.\n\n"
+        "detached worker. For user-requested Hermes-owned cron, schedule, Kanban, "
+        "or skill mutations that are not exposed as typed foreground controls, "
+        "spawn a routine detached Hermes worker with the narrow matching toolset "
+        "(`cronjob`, `kanban`, or `skills`) and return its handle; the worker must "
+        "use Hermes' existing validation and approval path. Never claim a service "
+        "mutation succeeded until its worker completion confirms it.\n\n"
         + identity
         + "\n\n"
         + scope

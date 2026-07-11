@@ -25,6 +25,8 @@ def test_stable_policy_excludes_volatile_memory_and_context():
     assert "PROJECT INSTRUCTIONS" not in rendered.developer_instructions
     assert "USER SECRET" not in rendered.developer_instructions
     assert "MEMORY FACT" not in rendered.developer_instructions
+    assert "(`cronjob`, `kanban`, or `skills`)" in rendered.developer_instructions
+    assert "routine detached Hermes worker" in rendered.developer_instructions
     assert rendered.revision.startswith("sha256:")
 
 
