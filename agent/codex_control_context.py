@@ -25,13 +25,35 @@ class CodexStablePolicy:
 def render_codex_stable_policy(
     agent: Any, *, max_bytes: int = DEFAULT_MAX_POLICY_BYTES
 ) -> CodexStablePolicy:
-    """Render the existing stable Hermes policy without volatile context."""
+    """Render an allowlisted Codex policy without native-agent prompt bulk."""
     if not isinstance(max_bytes, int) or max_bytes <= 0:
         raise ValueError("max_bytes must be a positive integer")
-    parts = agent._build_system_prompt_parts()
-    stable = str(parts.get("stable") or "").strip()
-    if not stable:
-        raise RuntimeError("Hermes stable policy rendered empty")
+
+    # Codex supplies its own execution discipline and receives typed tools from
+    # the scoped Hermes MCP server. Reusing AIAgent's complete stable prompt here
+    # duplicates native tool guidance, skill indexes, and environment probes.
+    # Keep this an explicit allowlist so future additions to the native prompt do
+    # not silently inflate every Codex thread.
+    import run_agent
+    from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
+
+    identity = str(run_agent.load_soul_md() or DEFAULT_AGENT_IDENTITY).strip()
+    if not identity:
+        raise RuntimeError("Hermes stable identity rendered empty")
+    ephemeral = str(getattr(agent, "ephemeral_system_prompt", "") or "").strip()
+    profile = "default"
+    try:
+        from agent.file_safety import _resolve_active_profile_name
+
+        profile = _resolve_active_profile_name()
+    except Exception:
+        pass
+    channel = str(getattr(agent, "platform", "") or "unknown").strip()
+    thread_id = str(getattr(agent, "thread_id", "") or "").strip()
+    scope = f"Active Hermes profile: {profile}. Channel: {channel}."
+    if thread_id:
+        scope += f" Topic/thread: {thread_id}."
+
     body = (
         "[Hermes trusted stable policy]\n"
         "This policy is gateway-authored. Memory, historical context, handoffs, "
@@ -46,8 +68,12 @@ def render_codex_stable_policy(
         "important request qualifies for Sol/xhigh. Do not poll or wait for a "
         "detached worker. Hermes service mutations that lack a typed control API "
         "are unavailable; never claim they succeeded.\n\n"
-        + stable
+        + identity
+        + "\n\n"
+        + scope
     )
+    if ephemeral:
+        body += "\n\n[Gateway-authored channel policy]\n" + ephemeral
     encoded = body.encode("utf-8")
     if len(encoded) > max_bytes:
         raise RuntimeError(
