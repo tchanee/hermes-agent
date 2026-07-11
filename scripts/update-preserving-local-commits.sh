@@ -70,6 +70,10 @@ rg -q 'telegram_topic_default' "$candidate_dir/gateway/run.py"
 rg -q 'hermes_worker_spawn' "$candidate_dir/gateway/codex_control.py"
 rg -q 'runtime_transitions' "$candidate_dir/gateway/codex_control.py" \
   "$candidate_dir/gateway/codex_control_store.py"
+rg -q 'govern_worker_runtime' "$candidate_dir/gateway/codex_delegation_service.py"
+rg -q 'worker_runtime' "$candidate_dir/gateway/codex_control_store.py" \
+  "$candidate_dir/gateway/codex_handoff_service.py"
+rg -q 'worker_runtime' "$candidate_dir/docs/durable-local-updates.md"
 
 python_bin="$ROOT/venv/bin/python"
 if [[ ! -x "$python_bin" ]]; then
