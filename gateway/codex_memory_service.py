@@ -11,13 +11,7 @@ from gateway.codex_control_store import CodexControlStore
 MAX_OPERATIONS = 12
 MAX_RATIONALE_CHARS = 1000
 MAX_SOURCE_REFS = 12
-ALLOWED_SOURCE_KINDS = {
-    "foreground_user",
-    "cross_thread",
-    "worker",
-    "tool",
-    "web",
-}
+ALLOWED_SOURCE_KINDS = {"foreground_user"}
 
 
 class CodexMemoryService:
@@ -46,11 +40,16 @@ class CodexMemoryService:
         if not idempotency_key or len(idempotency_key) > 128:
             raise ValueError("idempotency_key is required and limited to 128 characters")
         if source_kind not in ALLOWED_SOURCE_KINDS:
-            raise ValueError("invalid source_kind")
+            raise ValueError(
+                "shared memory requires foreground_user evidence; retrieved, "
+                "worker, tool, and web content must be restated by the user"
+            )
         if not isinstance(source_refs, list) or len(source_refs) > MAX_SOURCE_REFS:
             raise ValueError(f"source_refs must be a list of at most {MAX_SOURCE_REFS} items")
         if any(not isinstance(ref, dict) for ref in source_refs):
             raise ValueError("each source reference must be an object")
+        if not source_refs or any(not str(ref.get("message_id") or "").strip() for ref in source_refs):
+            raise ValueError("foreground_user proposals require source_refs with message_id")
 
         self.memory_store.load_from_disk()
         expected_revision = self.memory_store.revision(target)

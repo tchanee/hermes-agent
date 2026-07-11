@@ -86,3 +86,22 @@ def test_idempotency_and_poisoned_content_are_enforced(service):
             ),
             principal(),
         )
+
+
+@pytest.mark.parametrize("source_kind", ["cross_thread", "worker", "tool", "web"])
+def test_non_foreground_material_cannot_be_promoted_directly(service, source_kind):
+    memory, _store = service
+    with pytest.raises(ValueError, match="must be restated by the user"):
+        memory.propose(
+            proposal_params(
+                idempotency_key=f"tainted-{source_kind}",
+                source_kind=source_kind,
+            ),
+            principal(),
+        )
+
+
+def test_foreground_proposal_requires_message_provenance(service):
+    memory, _store = service
+    with pytest.raises(ValueError, match="source_refs with message_id"):
+        memory.propose(proposal_params(source_refs=[]), principal())
