@@ -2233,7 +2233,7 @@ class GatewaySlashCommandsMixin:
             else:
                 latest_configured["api_mode"] = configured["api_mode"]
             latest_overrides[session_key] = latest_configured
-            atomic_yaml_write(_hermes_home / "config.yaml", latest)
+            atomic_config_write(_hermes_home / "config.yaml", latest)
         if rollback_transition_id is not None:
             control.complete_runtime_rollback(rollback_transition_id)
         in_memory = dict(self._session_model_overrides.get(session_key) or {})

@@ -243,6 +243,9 @@ class TestRunConversationCodexPath:
         )
         events = []
         agent = _make_codex_agent(event_callback=lambda name, payload: events.append((name, payload)))
+        # Keep the canary above the compression threshold even as upstream
+        # model metadata increases Terra's advertised context window.
+        agent.context_compressor.threshold_tokens = 250_000
 
         with patch.object(agent, "_spawn_background_review", return_value=None):
             result = agent.run_conversation("hello")
