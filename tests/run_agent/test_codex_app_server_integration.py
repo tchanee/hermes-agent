@@ -17,6 +17,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import run_agent
+from agent.codex_runtime import should_reseed_codex_thread
 from agent.transports.codex_app_server_session import CodexAppServerSession, TurnResult
 
 
@@ -69,6 +70,24 @@ class TestApiModeAccepted:
     def test_api_mode_is_codex_app_server(self):
         agent = _make_codex_agent()
         assert agent.api_mode == "codex_app_server"
+
+
+class TestControlPlaneReseedThreshold:
+    @pytest.mark.parametrize(
+        "total,window,threshold,expected",
+        [
+            (71, 100, 0.72, False),
+            (72, 100, 0.72, True),
+            (25, 100, 0.01, True),
+            (94, 100, 2.0, False),
+            (95, 100, 2.0, True),
+            (100, 0, 0.72, False),
+        ],
+    )
+    def test_reseed_decision_is_bounded(self, total, window, threshold, expected):
+        assert should_reseed_codex_thread(
+            total_tokens=total, context_window=window, threshold=threshold
+        ) is expected
 
 
 class TestRunConversationCodexPath:

@@ -94,6 +94,16 @@ def _coerce_usage_int(value: Any) -> int:
     return 0
 
 
+def should_reseed_codex_thread(
+    *, total_tokens: int, context_window: int, threshold: float
+) -> bool:
+    """Return whether a scoped native thread crossed its reseed boundary."""
+    if context_window <= 0 or total_tokens < 0:
+        return False
+    bounded_threshold = max(0.25, min(float(threshold), 0.95))
+    return total_tokens / context_window >= bounded_threshold
+
+
 def _record_codex_app_server_usage(agent, turn) -> dict[str, Any]:
     """Translate Codex app-server token usage into Hermes accounting.
 
@@ -369,7 +379,12 @@ def run_codex_app_server_turn(
         threshold = float(cfg_get(
             load_config(), "gateway", "codex_control_plane", "reseed_threshold", default=0.72
         ))
-        if window > 0 and total / window >= max(0.25, min(threshold, 0.95)):
+        if (
+            hasattr(agent, "_codex_control_generation")
+            and should_reseed_codex_thread(
+                total_tokens=total, context_window=window, threshold=threshold
+            )
+        ):
             agent._codex_reseed_required = True
             agent._codex_reseed_usage = {"total_tokens": total, "context_window": window}
     except Exception:
