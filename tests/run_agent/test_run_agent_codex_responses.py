@@ -1167,7 +1167,10 @@ def test_chat_messages_to_responses_input_bounds_legacy_projected_call_ids(monke
                 "tool_calls": [{
                     "id": legacy_id,
                     "type": "function",
-                    "function": {"name": "bootstrap", "arguments": "{}"},
+                    "function": {
+                        "name": "mcp.hermes-control.hermes_context_bootstrap",
+                        "arguments": "{}",
+                    },
                 }],
             },
             {"role": "tool", "tool_call_id": legacy_id, "content": "ok"},
@@ -1178,6 +1181,7 @@ def test_chat_messages_to_responses_input_bounds_legacy_projected_call_ids(monke
     function_output = next(item for item in items if item.get("type") == "function_call_output")
     assert function_call["call_id"] == function_output["call_id"]
     assert len(function_call["call_id"]) <= 64
+    assert function_call["name"] == "mcp_hermes-control_hermes_context_bootstrap"
 
 
 def test_chat_messages_to_responses_input_accepts_call_pipe_fc_ids(monkeypatch):

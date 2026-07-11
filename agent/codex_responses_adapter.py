@@ -200,6 +200,17 @@ def _bounded_responses_call_id(raw_id: str) -> str:
     return f"call_legacy_{digest}"
 
 
+def _responses_function_name(raw_name: str) -> str:
+    """Normalize projected tool names to the Responses function-name grammar."""
+    value = re.sub(r"[^A-Za-z0-9_-]", "_", str(raw_name or "").strip())
+    if not value:
+        return "tool"
+    if len(value) <= 64:
+        return value
+    digest = hashlib.sha256(value.encode("utf-8", errors="replace")).hexdigest()[:12]
+    return f"{value[:51]}_{digest}"
+
+
 def _split_responses_tool_id(raw_id: Any) -> tuple[Optional[str], Optional[str]]:
     """Split a stored tool id into (call_id, response_item_id)."""
     if not isinstance(raw_id, str):
@@ -532,7 +543,7 @@ def _chat_messages_to_responses_input(
                         items.append({
                             "type": "function_call",
                             "call_id": call_id,
-                            "name": fn_name,
+                            "name": _responses_function_name(fn_name),
                             "arguments": arguments,
                         })
                 continue
@@ -615,7 +626,7 @@ def _preflight_codex_input_items(raw_items: Any) -> List[Dict[str, Any]]:
                 {
                     "type": "function_call",
                     "call_id": _bounded_responses_call_id(call_id),
-                    "name": name.strip(),
+                    "name": _responses_function_name(name),
                     "arguments": arguments,
                 }
             )
