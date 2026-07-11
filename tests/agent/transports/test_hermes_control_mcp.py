@@ -1,8 +1,20 @@
 import os
-
 import pytest
 
 from agent.transports import hermes_tools_mcp_server as server
+
+
+def test_worker_spawn_role_and_importance_are_closed_enums(monkeypatch):
+    class Client:
+        def call(self, *_args, **_kwargs):
+            return {}
+
+    monkeypatch.setattr(server, "_control_client_from_env", lambda: Client())
+    mcp = server._build_server()
+    tool = mcp._tool_manager._tools["hermes_worker_spawn"]
+    properties = tool.parameters["properties"]
+    assert properties["role"]["enum"] == ["leaf", "orchestrator"]
+    assert properties["importance"]["enum"] == ["routine", "important"]
 
 
 def test_control_client_absent_without_scoped_environment(monkeypatch):

@@ -49,7 +49,7 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -261,8 +261,8 @@ def _build_server() -> Any:
             idempotency_key: str,
             context: str = "",
             toolsets: Optional[list[str]] = None,
-            role: str = "leaf",
-            importance: str = "routine",
+            role: Literal["leaf", "orchestrator"] = "leaf",
+            importance: Literal["routine", "important"] = "routine",
         ) -> str:
             return json.dumps(control_client.call("workers.spawn", {
                 "goal": goal, "idempotency_key": idempotency_key,
@@ -348,7 +348,9 @@ def _build_server() -> Any:
             name="hermes_worker_spawn",
             description=(
                 "Dispatch an autonomous Hermes worker and return immediately so this chat stays responsive. "
-                "Use importance='routine' normally; use 'important' only for consequential, complex work that warrants Sol/xhigh."
+                "role must be 'leaf' or 'orchestrator'. Use importance='routine' normally; "
+                "use 'important' only for consequential, complex work that warrants Sol/high. "
+                "A dispatch succeeded only when this tool returns a delegation_id; otherwise report the error and never claim work is running."
             ),
         )(hermes_worker_spawn)
         mcp.tool(name="hermes_worker_status", description="Inspect workers owned by this Telegram session generation.")(
