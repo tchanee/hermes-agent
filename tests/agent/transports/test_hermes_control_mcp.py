@@ -7,7 +7,7 @@ from agent.transports import hermes_tools_mcp_server as server
 def test_worker_spawn_role_and_importance_are_closed_enums(monkeypatch):
     class Client:
         def call(self, *_args, **_kwargs):
-            return {}
+            return {"delegation_id": "deleg_test", "worker_runtime": "codex"}
 
     monkeypatch.setattr(server, "_control_client_from_env", lambda: Client())
     mcp = server._build_server()
@@ -15,6 +15,10 @@ def test_worker_spawn_role_and_importance_are_closed_enums(monkeypatch):
     properties = tool.parameters["properties"]
     assert properties["role"]["enum"] == ["leaf", "orchestrator"]
     assert properties["importance"]["enum"] == ["routine", "important"]
+    assert tool.fn("goal", "key") == {
+        "delegation_id": "deleg_test", "worker_runtime": "codex",
+    }
+    assert tool.fn_metadata.output_schema["type"] == "object"
 
 
 def test_control_client_absent_without_scoped_environment(monkeypatch):

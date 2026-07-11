@@ -263,29 +263,29 @@ def _build_server() -> Any:
             toolsets: Optional[list[str]] = None,
             role: Literal["leaf", "orchestrator"] = "leaf",
             importance: Literal["routine", "important"] = "routine",
-        ) -> str:
-            return json.dumps(control_client.call("workers.spawn", {
+        ) -> dict[str, Any]:
+            return control_client.call("workers.spawn", {
                 "goal": goal, "idempotency_key": idempotency_key,
                 "context": context, "toolsets": toolsets or [], "role": role,
                 "importance": importance,
-            }), ensure_ascii=False)
+            })
 
-        def hermes_worker_status(delegation_id: str = "") -> str:
-            return json.dumps(control_client.call(
+        def hermes_worker_status(delegation_id: str = "") -> dict[str, Any]:
+            return control_client.call(
                 "workers.status", {"delegation_id": delegation_id}
-            ), ensure_ascii=False)
+            )
 
-        def hermes_worker_steer(delegation_id: str, message: str, idempotency_key: str) -> str:
-            return json.dumps(control_client.call(
+        def hermes_worker_steer(delegation_id: str, message: str, idempotency_key: str) -> dict[str, Any]:
+            return control_client.call(
                 "workers.steer", {"delegation_id": delegation_id, "message": message,
                                    "idempotency_key": idempotency_key}
-            ), ensure_ascii=False)
+            )
 
-        def hermes_worker_cancel(delegation_id: str, idempotency_key: str) -> str:
-            return json.dumps(control_client.call(
+        def hermes_worker_cancel(delegation_id: str, idempotency_key: str) -> dict[str, Any]:
+            return control_client.call(
                 "workers.cancel", {"delegation_id": delegation_id,
                                     "idempotency_key": idempotency_key}
-            ), ensure_ascii=False)
+            )
 
         def hermes_cron_list(include_disabled: bool = True) -> str:
             return json.dumps(control_client.call(
