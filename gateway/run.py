@@ -3335,6 +3335,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         source: Optional[SessionSource] = None,
         session_key: Optional[str] = None,
         user_config: Optional[dict] = None,
+        allow_topic_codex_default: bool = False,
     ) -> tuple[str, dict]:
         """Resolve model/runtime for a session, honoring session-scoped /model overrides.
 
@@ -3449,6 +3450,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if resolved_session_key:
                     _last_good[resolved_session_key] = model
                 _last_good["*"] = model
+
+        if allow_topic_codex_default and source is not None:
+            config_data = user_config if isinstance(user_config, dict) else _load_gateway_config()
+            control_cfg = cfg_get(
+                config_data, "gateway", "codex_control_plane", default={}
+            )
+            topic_default = bool(
+                isinstance(control_cfg, dict)
+                and control_cfg.get("enabled")
+                and control_cfg.get("telegram_topic_default")
+            )
+            explicit_api_mode = bool(
+                override is not None and override.get("api_mode") is not None
+            )
+            is_telegram_topic = bool(
+                source.platform == Platform.TELEGRAM and source.thread_id
+            )
+            if (
+                topic_default
+                and is_telegram_topic
+                and not explicit_api_mode
+                and runtime_kwargs.get("provider") == "openai-codex"
+            ):
+                runtime_kwargs["api_mode"] = "codex_app_server"
 
         return model, runtime_kwargs
 
@@ -15455,6 +15480,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     source=source,
                     session_key=session_key,
                     user_config=user_config,
+                    allow_topic_codex_default=True,
                 )
                 logger.debug(
                     "run_agent resolved: model=%s provider=%s session=%s",

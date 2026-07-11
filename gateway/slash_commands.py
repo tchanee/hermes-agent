@@ -1683,7 +1683,8 @@ class GatewaySlashCommandsMixin:
         effective = runtime_override.get("api_mode", configured.get("api_mode"))
         if action == "status" and not effective:
             _, resolved = self._resolve_session_agent_runtime(
-                source=source, session_key=session_key, user_config=config
+                source=source, session_key=session_key, user_config=config,
+                allow_topic_codex_default=True,
             )
             effective = resolved.get("api_mode") or "default"
 

@@ -119,6 +119,88 @@ def test_configured_session_override_survives_process_restart(monkeypatch):
     assert reasoning == {"enabled": True, "effort": "xhigh"}
 
 
+def test_telegram_topic_default_only_applies_to_foreground_resolution(monkeypatch):
+    config = {
+        "model": {"default": "gpt-5.6-terra"},
+        "gateway": {"codex_control_plane": {
+            "enabled": True,
+            "telegram_topic_default": True,
+        }},
+    }
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: config)
+    monkeypatch.setattr(
+        gateway_run,
+        "_resolve_runtime_agent_kwargs",
+        lambda: {
+            "provider": "openai-codex",
+            "api_key": "token",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_mode": "codex_responses",
+        },
+    )
+    runner = _make_runner()
+    topic = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1003931971445",
+        chat_type="group",
+        user_id="854344782",
+        thread_id="7351",
+    )
+
+    _, foreground = runner._resolve_session_agent_runtime(
+        source=topic, user_config=config, allow_topic_codex_default=True
+    )
+    _, background = runner._resolve_session_agent_runtime(
+        source=topic, user_config=config
+    )
+
+    assert foreground["api_mode"] == "codex_app_server"
+    assert background["api_mode"] == "codex_responses"
+
+
+def test_exact_topic_runtime_rolls_back_topic_default(monkeypatch):
+    session_key = "agent:main:telegram:group:-1003931971445:7351"
+    config = {
+        "model": {"default": "gpt-5.6-terra"},
+        "gateway": {
+            "codex_control_plane": {
+                "enabled": True,
+                "telegram_topic_default": True,
+            },
+            "session_model_overrides": {
+                session_key: {"api_mode": "codex_responses"},
+            },
+        },
+    }
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: config)
+    monkeypatch.setattr(
+        gateway_run,
+        "_resolve_runtime_agent_kwargs",
+        lambda: {
+            "provider": "openai-codex",
+            "api_key": "token",
+            "api_mode": "codex_responses",
+        },
+    )
+    runner = _make_runner()
+    topic = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1003931971445",
+        chat_type="group",
+        user_id="854344782",
+        thread_id="7351",
+    )
+
+    _, runtime = runner._resolve_session_agent_runtime(
+        source=topic,
+        session_key=session_key,
+        user_config=config,
+        allow_topic_codex_default=True,
+    )
+
+    assert runtime["api_mode"] == "codex_responses"
+
+
 def test_run_agent_prefers_session_override_over_global_runtime(monkeypatch):
     monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
     monkeypatch.setattr(gateway_run, "load_dotenv", lambda *args, **kwargs: None)
