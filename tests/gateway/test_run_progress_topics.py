@@ -688,6 +688,8 @@ async def _run_with_agent(
     chat_type="group",
     thread_id="17585",
     adapter_cls=ProgressCaptureAdapter,
+    pending_event_attrs=None,
+    runner_setup=None,
 ):
     if config_data:
         import yaml
@@ -704,6 +706,8 @@ async def _run_with_agent(
 
     adapter = adapter_cls(platform=platform)
     runner = _make_runner(adapter)
+    if runner_setup is not None:
+        runner_setup(runner)
     gateway_run = importlib.import_module("gateway.run")
     if config_data and "streaming" in config_data:
         runner.config.streaming = StreamingConfig.from_dict(config_data["streaming"])
@@ -719,12 +723,15 @@ async def _run_with_agent(
     if thread_id:
         session_key = f"{session_key}:{thread_id}"
     if pending_text is not None:
-        adapter._pending_messages[session_key] = MessageEvent(
+        pending_event = MessageEvent(
             text=pending_text,
             message_type=MessageType.TEXT,
             source=source,
             message_id="queued-1",
         )
+        for key, value in (pending_event_attrs or {}).items():
+            setattr(pending_event, key, value)
+        adapter._pending_messages[session_key] = pending_event
 
     result = await runner._run_agent(
         message="hello",
@@ -1045,6 +1052,36 @@ async def test_queued_followup_rebaselines_cache_before_recursive_turn(monkeypat
             "sess-queued-cache-watermark",
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_queued_control_completion_is_acknowledged_after_recursive_turn(
+    monkeypatch, tmp_path
+):
+    acknowledged = []
+
+    class Store:
+        def acknowledge_outbox(self, event_id):
+            acknowledged.append(event_id)
+            return True
+
+    QueuedCommentaryAgent.calls = 0
+    _adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        QueuedCommentaryAgent,
+        session_id="sess-queued-control-ack",
+        pending_text="delegation completion",
+        pending_event_attrs={"_control_event_id": "control-event-1"},
+        runner_setup=lambda runner: setattr(
+            runner,
+            "_codex_control_runtime",
+            SimpleNamespace(store=Store()),
+        ),
+    )
+
+    assert result["final_response"] == "final response 2"
+    assert acknowledged == ["control-event-1"]
 
 
 @pytest.mark.asyncio

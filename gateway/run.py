@@ -17176,6 +17176,36 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     event_message_id=next_message_id,
                     channel_prompt=next_channel_prompt,
                 )
+                # This queued event bypasses _handle_message_with_agent's
+                # top-level post-persistence acknowledgement (that handler
+                # only sees the original event). Acknowledge its durable
+                # delivery here, after the recursive turn has persisted.
+                if pending_event is not None:
+                    _queued_delivery = getattr(
+                        pending_event, "_async_delegation_delivery", None
+                    )
+                    if _queued_delivery:
+                        from tools.async_delegation import acknowledge_delivery
+
+                        if not acknowledge_delivery(*_queued_delivery):
+                            logger.error(
+                                "Queued delegation turn persisted but acknowledgement failed: %s",
+                                _queued_delivery[0],
+                            )
+                    _queued_control_event = getattr(
+                        pending_event, "_control_event_id", None
+                    )
+                    if (
+                        _queued_control_event
+                        and getattr(self, "_codex_control_runtime", None) is not None
+                        and not self._codex_control_runtime.store.acknowledge_outbox(
+                            _queued_control_event
+                        )
+                    ):
+                        logger.error(
+                            "Queued control outbox acknowledgement failed: %s",
+                            _queued_control_event,
+                        )
                 return _preserve_queued_followup_history_offset(result, followup_result)
         finally:
             # Stop progress sender, interrupt monitor, and notification task
