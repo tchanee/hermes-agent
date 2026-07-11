@@ -44,10 +44,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "integrating $upstream_count upstream commit(s) with $local_count local commit(s)"
+echo "integrating $upstream_count upstream commit(s) with $local_count preserved local commit(s)"
 git worktree add -q -b "$candidate_branch" "$candidate_dir" "$old_head"
-if ! git -C "$candidate_dir" rebase --onto "$upstream" "$base"; then
-  git -C "$candidate_dir" rebase --abort >/dev/null 2>&1 || true
+if ! git -C "$candidate_dir" merge --no-edit --no-ff "$upstream"; then
+  git -C "$candidate_dir" merge --abort >/dev/null 2>&1 || true
   echo "candidate integration conflicted; live checkout is unchanged" >&2
   exit 1
 fi

@@ -14,8 +14,8 @@ scripts/update-preserving-local-commits.sh
 scripts/update-preserving-local-commits.sh --apply
 ```
 
-The first command is a dry run. It fetches official `origin/main`, rebases all
-local commits in a temporary worktree, checks required control-plane surfaces,
+The first command is a dry run. It fetches official `origin/main`, merges it
+into the preserved local lineage in a temporary worktree, checks required control-plane surfaces,
 and runs the focused regression suite. It never changes the live checkout or
 gateway.
 
