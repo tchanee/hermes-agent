@@ -45,6 +45,30 @@ def test_old_codex_version_fails_before_runtime_start(tmp_path):
         )
 
 
+def test_runtime_unwraps_async_session_db_for_sync_control_services(tmp_path):
+    source = tmp_path / "source-codex"
+    source.mkdir()
+    (source / "auth.json").write_text("{}", encoding="utf-8")
+    db = FakeDB()
+
+    class AsyncFacade:
+        _db = db
+
+    rt = CodexControlRuntime(
+        hermes_home=Path("/tmp") / ("hcrt-async-" + tmp_path.name[-6:]),
+        session_db=AsyncFacade(),
+        profile="orchestrator",
+        gateway_pid=99,
+        gateway_start="start",
+        source_codex_home=source,
+        codex_binary_check=lambda *_args, **_kwargs: (True, "0.144.1"),
+    )
+    try:
+        assert rt.handoffs.session_db is db
+    finally:
+        rt.close()
+
+
 def test_first_session_starts_fresh_and_binds_once(runtime):
     prepared = runtime.prepare_session(
         session_key="topic", session_id="s1", policy_revision="r1"

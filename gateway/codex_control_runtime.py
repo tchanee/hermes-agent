@@ -57,10 +57,18 @@ class CodexControlRuntime:
         self.store = CodexControlStore(self.runtime_root / "control-v2.db")
         self.store.repair_interrupted_batch_states()
         memory = load_on_disk_store()
+        # Control RPC handlers execute synchronously on their own worker
+        # threads. GatewayRunner owns an AsyncSessionDB facade whose methods
+        # return coroutines; unwrap it at this boundary so handoff, bootstrap,
+        # and session-search services receive concrete results.
+        control_session_db = getattr(session_db, "_db", session_db)
         self.delegations = CodexDelegationService(store=self.store)
-        self.handoffs = CodexHandoffService(store=self.store, session_db=session_db)
+        self.handoffs = CodexHandoffService(
+            store=self.store, session_db=control_session_db
+        )
         context = CodexContextService(
-            memory_store=memory, session_db=session_db, handoffs=self.handoffs,
+            memory_store=memory, session_db=control_session_db,
+            handoffs=self.handoffs,
             delegations=self.delegations, audit_store=self.store,
         )
         self.memory = CodexMemoryService(store=self.store, memory_store=memory)
