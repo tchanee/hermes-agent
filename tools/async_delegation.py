@@ -189,6 +189,16 @@ def reconcile_orphaned_delegations() -> int:
             else:
                 continue
             record["ledger_path"] = str(path)
+            # Normal completion notifies lifecycle observers before enqueueing
+            # so scoped control planes can commit terminal state + outbox. Do
+            # the same during restart recovery; otherwise their durable row
+            # remains stuck in ``running`` even though Telegram receives an
+            # interrupted completion from this generic ledger.
+            control_event_id = _notify_lifecycle(
+                dict(record), result, delivery_status
+            )
+            if control_event_id:
+                record["control_event_id"] = control_event_id
             if record.get("is_batch"):
                 enqueued = _push_batch_completion_event(record, result, delivery_status)
             else:

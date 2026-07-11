@@ -49,6 +49,27 @@ def test_restart_reconciles_running_delegation_as_interrupted():
     assert not ad._LEDGER_PATH.exists()
 
 
+def test_restart_reconciliation_notifies_control_lifecycle_before_enqueue():
+    observed = []
+
+    def observer(record, result, status):
+        observed.append((record["delegation_id"], result["exit_reason"], status))
+        return "control-event-1"
+
+    ad.register_lifecycle_observer(observer)
+    ad._LEDGER_PATH.write_text(
+        '[{"delegation_id":"deleg_control","goal":"survive restart",'
+        '"session_key":"agent:main:telegram:group:1:2","status":"running",'
+        '"role":"leaf","model":"m","dispatched_at":1}]',
+        encoding="utf-8",
+    )
+
+    assert ad.reconcile_orphaned_delegations() == 1
+    evt = _drain_one()
+    assert observed == [("deleg_control", "owner_process_exit", "interrupted")]
+    assert evt["control_event_id"] == "control-event-1"
+
+
 def test_reconcile_does_not_interrupt_live_owner(monkeypatch):
     import gateway.status as status
 
