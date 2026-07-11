@@ -355,7 +355,15 @@ def run_codex_app_server_turn(
     # standard {role, content, tool_calls, tool_call_id} entries, which
     # is exactly what curator.py / sessions DB expect.
     if turn.projected_messages:
-        messages.extend(turn.projected_messages)
+        # Hermes owns inbound user-message persistence in build_turn_context().
+        # Codex also echoes the submitted input as a userMessage event; keeping
+        # that projection would duplicate every app-server user turn in the
+        # canonical transcript. Project only Codex-owned assistant/tool events.
+        messages.extend(
+            message
+            for message in turn.projected_messages
+            if message.get("role") != "user"
+        )
 
     # The app-server path returns before the default conversation loop's
     # terminal persistence block. Flush the complete projection here so the

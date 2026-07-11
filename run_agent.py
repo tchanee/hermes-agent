@@ -1670,6 +1670,9 @@ class AIAgent:
                     reasoning_details=msg.get("reasoning_details") if role == "assistant" else None,
                     codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
                     codex_message_items=msg.get("codex_message_items") if role == "assistant" else None,
+                    platform_message_id=(
+                        msg.get("platform_message_id") or msg.get("message_id")
+                    ),
                     timestamp=msg.get("timestamp"),
                 )
                 flushed_ids.add(msg_id)

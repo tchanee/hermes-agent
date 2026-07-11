@@ -248,6 +248,25 @@ class TestRunConversationCodexPath:
             for message in persisted
         )
 
+    def test_codex_user_echo_is_not_duplicated(self, fake_session):
+        agent = _make_codex_agent()
+        agent._codex_session = MagicMock()
+        agent._codex_session.run_turn.return_value = TurnResult(
+            final_text="done",
+            projected_messages=[
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "done"},
+            ],
+            thread_id="thread-stub-1",
+        )
+
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            result = agent.run_conversation("hello")
+
+        assert [m for m in result["messages"] if m.get("role") == "user"] == [
+            {"role": "user", "content": "hello"}
+        ]
+
     def test_projected_messages_are_synced_to_external_memory(self, fake_session):
         agent = _make_codex_agent()
         agent._memory_manager = MagicMock()

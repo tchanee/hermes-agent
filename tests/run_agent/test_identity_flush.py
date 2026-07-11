@@ -31,6 +31,27 @@ def _contents(db, session_id=SESSION_ID):
 
 
 class TestIdentityFlush:
+    def test_platform_message_id_is_forwarded_to_session_db(self):
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = SessionDB(db_path=Path(tmpdir) / "t.db")
+            try:
+                agent = _make_agent(db)
+                agent._flush_messages_to_session_db(
+                    [{
+                        "role": "user",
+                        "content": "telegram input",
+                        "platform_message_id": "7473",
+                    }],
+                    [],
+                )
+
+                rows = db.get_messages(SESSION_ID)
+                assert rows[-1]["platform_message_id"] == "7473"
+            finally:
+                db.close()
+
     def test_repair_shrunk_messages_below_history_length_still_persists_assistant(self):
         """When repair shortens messages below conversation_history, don't slice empty."""
         from hermes_state import SessionDB
