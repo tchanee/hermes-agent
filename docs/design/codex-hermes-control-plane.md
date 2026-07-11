@@ -1,8 +1,11 @@
 # Codex Runtime With Hermes Control Plane
 
-Status: revision 3; topic 7351 pilot active after implementation review and
-live scoped Codex-to-gateway RPC verification. Broader rollout remains gated
-on real Telegram worker, restart/resume, compaction, and rollback exercises.
+Status: revision 4; topic 7351 pilot active. Live verification now covers
+policy-bounded startup, runtime-loss reseed, detached routine and important
+workers, parent responsiveness, steering, cancellation, completion replay,
+and gateway restart with Telegram/cron/Kanban continuity. Broader rollout
+remains gated on user-origin governed-memory approval/visibility, cross-topic
+isolation, and live rollback exercises.
 
 ## Objective
 
@@ -421,15 +424,20 @@ Phase 1: enable trusted profile context and read-only context status/search for
 Phase 2: enable governed memory proposals. Verify approval, injection rejection,
 atomic limits, provenance, and cross-thread visibility.
 
-Phase 3: enable detached spawn/list/status, then steer/cancel. Verify the parent
+Phase 3 (verified 2026-07-11): enable detached spawn/list/status, then steer/cancel. Verify the parent
 remains responsive, important-only Sol policy, restart reconciliation, and
 duplicate-request idempotency.
 
-Phase 4: enable handoff compaction/reseed under an artificially low test
+Phase 4 (verified through forced runtime-loss reseed): enable handoff compaction/reseed under an artificially low test
 threshold, then restore the production threshold after continuity checks.
 
-Phase 5: observe topic 7351 for several days. Only then migrate one low-risk
-topic at a time. Never bulk-edit all topic overrides.
+Phase 5: after the remaining live gates pass, enable
+`gateway.codex_control_plane.telegram_topic_default` for foreground Telegram
+topics. Exact per-topic `api_mode: codex_responses` overrides remain the
+rollback mechanism. This default is consumed only by foreground turn routing;
+cron, compression helpers, `/background`, and detached workers retain their
+Hermes-owned runtime and policy. Roll out with an explicit topic inventory and
+retain one rollback canary rather than bulk-editing individual topic entries.
 
 ## Verification Gates
 
