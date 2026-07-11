@@ -113,7 +113,7 @@ backup_branch="backup/pre-update-$stamp"
 git branch "$backup_branch" "$old_head"
 echo "backup branch created: $backup_branch"
 
-git reset --hard "$candidate_head"
+git merge --ff-only "$candidate_head"
 if ! "$ROOT/venv/bin/hermes" --profile orchestrator config check >/dev/null; then
   echo "post-activation config check failed; restoring $backup_branch" >&2
   git reset --hard "$backup_branch"
