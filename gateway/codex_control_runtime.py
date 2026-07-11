@@ -137,6 +137,19 @@ class CodexControlRuntime:
                 expected_thread = str(binding["thread_id"])
             target_generation = 1
 
+        # First migration from the Hermes loop has no prior Codex binding, but
+        # it may have years of topic-local Hermes transcript. Build the same
+        # bounded verified handoff used by reseeds so generation 1 starts with
+        # continuity instead of an empty native thread.
+        if target_generation == 1 and self.handoffs.get(
+            session_key=session_key, session_id=session_id
+        ) is None:
+            self.handoffs.build(
+                session_key=session_key,
+                session_id=session_id,
+                generation=target_generation,
+            )
+
         token, capability = self.store.issue_capability(
             profile=self.profile,
             session_key=session_key,

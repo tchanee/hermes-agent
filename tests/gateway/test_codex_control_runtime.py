@@ -75,6 +75,11 @@ def test_first_session_starts_fresh_and_binds_once(runtime):
     )
     assert prepared.resume_thread_id is None
     assert prepared.generation == 1
+    handoff = runtime.handoffs.get(session_key="topic", session_id="s1")
+    assert handoff is not None
+    assert handoff["payload"]["recent_user_requests"][0]["text"] == (
+        "Preserve this request."
+    )
     assert prepared.persist_thread("thread-1")
     prepared.bind_agent(object())
     assert not prepared.persist_thread("thread-stale")
