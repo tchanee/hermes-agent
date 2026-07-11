@@ -293,6 +293,11 @@ def _build_server() -> Any:
                 "services.kanban.list", {"board": board}
             ), ensure_ascii=False)
 
+        def hermes_notifications_list(include_finished: bool = False) -> str:
+            return json.dumps(control_client.call(
+                "services.notifications.list", {"include_finished": include_finished}
+            ), ensure_ascii=False)
+
         def hermes_skills_list(query: str = "", category: str = "") -> str:
             return json.dumps(control_client.call(
                 "skills.list", {"query": query, "category": category}
@@ -348,13 +353,20 @@ def _build_server() -> Any:
         mcp.tool(name="hermes_kanban_list", description="List Hermes Kanban state read-only.")(
             hermes_kanban_list
         )
+        mcp.tool(
+            name="hermes_notifications_list",
+            description=(
+                "List bounded Hermes process-watch and completion-notification status read-only; "
+                "process commands and output are excluded."
+            ),
+        )(hermes_notifications_list)
         mcp.tool(name="hermes_skills_list", description="Search the Hermes skill catalog read-only.")(
             hermes_skills_list
         )
         mcp.tool(name="hermes_skill_view", description="Read one Hermes skill definition.")(
             hermes_skill_view
         )
-        exposed_count += 12
+        exposed_count += 13
 
     logger.info(
         "hermes-tools MCP server registered %d/%d tools",
