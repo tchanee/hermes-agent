@@ -8,6 +8,7 @@ deadline timeouts. These tests pin all of that without spawning real codex.
 from __future__ import annotations
 
 import time
+import threading
 from unittest.mock import patch
 from typing import Any, Optional
 
@@ -53,6 +54,8 @@ class FakeClient:
         if method == "thread/start":
             return {"thread": {"id": "thread-fake-001"},
                     "activePermissionProfile": {"id": "workspace-write"}}
+        if method == "thread/resume":
+            return {"thread": {"id": (params or {})["threadId"]}}
         if method == "turn/start":
             return {"turn": {"id": "turn-fake-001"}}
         if method == "turn/interrupt":
@@ -139,6 +142,87 @@ class TestTurnInputCoercion:
 # ---- lifecycle ----
 
 class TestLifecycle:
+    def test_fresh_thread_receives_configured_model(self):
+        client = FakeClient()
+        session = make_session(client, model="gpt-5.6-terra")
+        session.ensure_started()
+        params = next(params for method, params in client.requests if method == "thread/start")
+        assert params["model"] == "gpt-5.6-terra"
+
+    def test_fresh_thread_receives_developer_instructions(self):
+        client = FakeClient()
+        session = make_session(client, developer_instructions="trusted policy")
+        session.ensure_started()
+        params = next(params for method, params in client.requests if method == "thread/start")
+        assert params["developerInstructions"] == "trusted policy"
+
+    def test_resume_does_not_attempt_instruction_refresh(self):
+        client = FakeClient()
+        session = make_session(
+            client,
+            resume_thread_id="thread-existing",
+            developer_instructions="must not be sent on resume",
+        )
+        session.ensure_started()
+        params = next(params for method, params in client.requests if method == "thread/resume")
+        assert params == {"threadId": "thread-existing"}
+
+    def test_already_pending_interrupt_prevents_startup(self):
+        client = FakeClient()
+        session = make_session(client)
+        session.request_interrupt()
+        result = session.run_turn(user_input="stale")
+        assert result.interrupted is True
+        assert client.requests == []
+
+    def test_thread_binding_persisted_before_turn_start(self):
+        client = FakeClient()
+        observed = []
+        session = make_session(client, on_thread_ready=lambda tid: observed.append(tid))
+        session.ensure_started()
+        assert observed == ["thread-fake-001"]
+        assert not any(method == "turn/start" for method, _ in client.requests)
+
+    def test_resume_existing_thread_instead_of_starting_new(self):
+        client = FakeClient()
+        s = make_session(client, resume_thread_id="thread-existing")
+        assert s.ensure_started() == "thread-existing"
+        assert ("thread/resume", {"threadId": "thread-existing"}) in client.requests
+        assert not any(method == "thread/start" for method, _ in client.requests)
+
+    def test_interrupt_during_startup_prevents_turn_start(self):
+        entered = threading.Event()
+        release = threading.Event()
+
+        class SlowStartupClient(FakeClient):
+            def initialize(self, **kwargs):
+                entered.set()
+                release.wait(timeout=2)
+                return super().initialize(**kwargs)
+
+        client = SlowStartupClient()
+        session = make_session(client)
+        result_holder = []
+        worker = threading.Thread(
+            target=lambda: result_holder.append(session.run_turn(user_input="stale"))
+        )
+        worker.start()
+        assert entered.wait(timeout=1)
+        session.request_interrupt()
+        release.set()
+        worker.join(timeout=2)
+        assert result_holder[0].interrupted is True
+        assert not any(method == "turn/start" for method, _ in client.requests)
+
+    def test_unexpected_startup_exception_becomes_pre_turn_error(self):
+        class BrokenClient(FakeClient):
+            def initialize(self, **kwargs):
+                raise OSError("spawn failed")
+
+        result = make_session(BrokenClient()).run_turn(user_input="hello")
+        assert result.turn_started is False
+        assert "spawn failed" in result.error
+
     def test_ensure_started_is_idempotent(self):
         client = FakeClient()
         s = make_session(client)
@@ -396,11 +480,21 @@ class TestRunTurn:
             threadId="t", turnId="tu1",
         )
         s = make_session(client)
-        s.ensure_started()
-        # Trip the interrupt before run_turn even consumes the notification.
-        # The loop will see interrupt set on its first iteration and bail.
+        result_box = {}
+        worker = threading.Thread(
+            target=lambda: result_box.setdefault(
+                "result", s.run_turn("loop forever", turn_timeout=2.0)
+            )
+        )
+        worker.start()
+        deadline = time.monotonic() + 1.0
+        while not any(method == "turn/start" for method, _ in client.requests):
+            assert time.monotonic() < deadline
+            time.sleep(0.001)
         s.request_interrupt()
-        r = s.run_turn("loop forever", turn_timeout=2.0)
+        worker.join(timeout=1.0)
+        assert not worker.is_alive()
+        r = result_box["result"]
         assert r.interrupted is True
         # turn/interrupt was requested with the right turnId
         assert any(
@@ -449,6 +543,21 @@ class TestRunTurn:
 # ---- approval bridge ----
 
 class TestServerRequestRouting:
+    def test_scoped_control_mcp_elicitation_is_accepted_only_when_trusted(self):
+        client = FakeClient()
+        session = make_session(client, trusted_mcp_servers={"hermes-control"})
+        session.ensure_started()
+        session._handle_server_request({
+            "id": "mcp-1", "method": "mcpServer/elicitation/request",
+            "params": {"serverName": "hermes-control"},
+        })
+        assert client.responses[-1][1]["action"] == "accept"
+        session._handle_server_request({
+            "id": "mcp-2", "method": "mcpServer/elicitation/request",
+            "params": {"serverName": "hermes-tools"},
+        })
+        assert client.responses[-1][1]["action"] == "decline"
+
     def test_exec_approval_with_callback_approves_once(self):
         client = FakeClient()
         client.queue_server_request(

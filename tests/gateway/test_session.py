@@ -1,5 +1,6 @@
 """Tests for gateway session management."""
 import json
+from datetime import datetime
 import pytest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -7,6 +8,7 @@ from gateway.config import Platform, HomeChannel, GatewayConfig, PlatformConfig
 from gateway.platforms.base import MessageEvent
 from gateway.session import (
     SessionSource,
+    SessionEntry,
     SessionStore,
     build_session_context,
     build_session_context_prompt,
@@ -18,6 +20,35 @@ from gateway.session import (
 # canonical_whatsapp_identifier.  Keep the tests referencing the old name
 # working without duplicating the suite.
 normalize_whatsapp_identifier = canonical_whatsapp_identifier
+
+
+def test_session_entry_preserves_codex_thread_id():
+    now = datetime.now().astimezone()
+    entry = SessionEntry(
+        session_key="agent:main:telegram:group:1:7351",
+        session_id="session-1",
+        created_at=now,
+        updated_at=now,
+        codex_thread_id="thread-123",
+    )
+    restored = SessionEntry.from_dict(entry.to_dict())
+    assert restored.codex_thread_id == "thread-123"
+
+
+def test_codex_thread_binding_rejects_stale_session_generation(tmp_path):
+    store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
+    source = SessionSource(
+        platform=Platform.TELEGRAM, chat_id="1", chat_type="group"
+    )
+    entry = store.get_or_create_session(source)
+    key = build_session_key(source)
+    assert not store.set_codex_thread_id(
+        key, "stale-thread", expected_session_id="different-session"
+    )
+    assert store.get_codex_thread_id(key) is None
+    assert store.set_codex_thread_id(
+        key, "current-thread", expected_session_id=entry.session_id
+    )
 
 
 class TestSessionSourceRoundtrip:

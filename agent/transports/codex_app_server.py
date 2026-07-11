@@ -74,11 +74,23 @@ class CodexAppServerClient:
         env: Optional[dict[str, str]] = None,
     ) -> None:
         self._codex_bin = codex_bin
-        spawn_env = os.environ.copy()
+        if codex_home:
+            # Scoped control-plane processes must not inherit gateway secrets
+            # (Telegram tokens, provider keys, plugin credentials, etc.).
+            inherited = {
+                "PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL",
+                "TERM", "TMPDIR", "RUST_LOG",
+            }
+            spawn_env = {
+                key: value for key, value in os.environ.items() if key in inherited
+            }
+        else:
+            spawn_env = os.environ.copy()
         if env:
             spawn_env.update(env)
         if codex_home:
             spawn_env["CODEX_HOME"] = codex_home
+            spawn_env["HOME"] = codex_home
 
         app_server_args = list(extra_args or [])
         # Kanban workers must be able to write their handoff/status back to

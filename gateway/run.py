@@ -2705,6 +2705,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # hermes_state.get_last_init_error() for slash-command error strings.
             logger.warning("SQLite session store not available: %s", e)
 
+        self._codex_control_runtime = None
+        try:
+            _control_cfg = cfg_get(
+                _load_gateway_config(),
+                "gateway", "codex_control_plane", default={},
+            )
+            if isinstance(_control_cfg, dict) and _control_cfg.get("enabled"):
+                from gateway.codex_control_runtime import CodexControlRuntime
+                from gateway.status import get_process_start_time
+
+                self._codex_control_runtime = CodexControlRuntime(
+                    hermes_home=_hermes_home,
+                    session_db=self._session_db,
+                    profile=self._active_profile_name(),
+                    gateway_pid=os.getpid(),
+                    gateway_start=str(
+                        get_process_start_time(os.getpid()) or "unknown"
+                    ),
+                )
+        except Exception:
+            logger.exception("Codex control-plane initialization failed")
+            raise
+
         # Opportunistic state.db maintenance: prune ended sessions older
         # than sessions.retention_days + optional VACUUM. Tracks last-run
         # in state_meta so it only actually executes once per
@@ -3327,7 +3350,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 resolved_session_key = None
 
         model = _resolve_gateway_model(user_config)
-        override = self._session_model_overrides.get(resolved_session_key) if resolved_session_key else None
+        override = None
+        if resolved_session_key:
+            config_data = user_config if isinstance(user_config, dict) else _load_gateway_config()
+            configured_overrides = cfg_get(
+                config_data, "gateway", "session_model_overrides", default={}
+            )
+            if isinstance(configured_overrides, dict):
+                configured = configured_overrides.get(resolved_session_key)
+                if isinstance(configured, dict):
+                    override = dict(configured)
+            runtime_override = self._session_model_overrides.get(resolved_session_key)
+            if runtime_override:
+                override = {**(override or {}), **runtime_override}
         if override:
             override_model = override.get("model", model)
             override_runtime = {
@@ -3366,10 +3401,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 runtime_model,
             )
             model = runtime_model
-        if override and resolved_session_key:
-            model, runtime_kwargs = self._apply_session_model_override(
-                resolved_session_key, model, runtime_kwargs
-            )
+        if override:
+            model = override.get("model", model)
+            for key in ("provider", "api_key", "base_url", "api_mode"):
+                value = override.get(key)
+                if value is not None:
+                    runtime_kwargs[key] = value
 
         # When the config has no model.default but a provider was resolved
         # (e.g. user ran `hermes auth add openai-codex` without `hermes model`),
@@ -3898,6 +3935,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         overrides = getattr(self, "_session_reasoning_overrides", {}) or {}
         if resolved_session_key and resolved_session_key in overrides:
             return overrides[resolved_session_key]
+        if resolved_session_key:
+            configured = cfg_get(
+                _load_gateway_config(),
+                "gateway",
+                "session_model_overrides",
+                resolved_session_key,
+                default={},
+            )
+            if isinstance(configured, dict):
+                effort = str(configured.get("reasoning_effort") or "").strip()
+                if effort:
+                    from hermes_constants import parse_reasoning_effort
+
+                    parsed = parse_reasoning_effort(effort)
+                    if parsed is not None:
+                        return parsed
         return self._load_reasoning_config()
 
     def _set_session_reasoning_override(
@@ -5928,6 +5981,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # from delegate_task(background=true) subagents and injects each
         # result back into its originating session as a new turn, covering the
         # idle case where the subagent finishes with no agent turn running.
+        try:
+            from tools.async_delegation import reconcile_orphaned_delegations
+            reconcile_orphaned_delegations()
+        except Exception as exc:
+            logger.error("Async delegation restart reconciliation failed: %s", exc)
         asyncio.create_task(self._async_delegation_watcher())
 
         logger.info("Press Ctrl+C to stop")
@@ -6811,6 +6869,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "Shutdown phase: final-cleanup tool kill done at +%.2fs",
                 _phase_elapsed(),
             )
+
+            if self._codex_control_runtime is not None:
+                try:
+                    self._codex_control_runtime.close()
+                except Exception as _e:
+                    logger.error("Codex control-plane shutdown failed: %s", _e)
+                self._codex_control_runtime = None
 
             # Reap the process-global auxiliary-client cache once at the very
             # end of teardown.  Per-turn cleanup runs in _cleanup_agent_resources
@@ -7742,7 +7807,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             # /codex-runtime must not be used while the agent is running.
             # Switching mid-turn would split a turn across two transports.
-            if _cmd_def_inner and _cmd_def_inner.name == "codex-runtime":
+            if (
+                _cmd_def_inner
+                and _cmd_def_inner.name == "runtime"
+                and event.get_command_args().strip().lower() in {"", "status"}
+            ):
+                return await self._handle_topic_runtime_command(event)
+            if _cmd_def_inner and _cmd_def_inner.name in {"codex-runtime", "runtime"}:
                 return ("Agent is running — wait or /stop first, then "
                         "change runtime.")
 
@@ -8130,6 +8201,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "codex-runtime":
             return await self._handle_codex_runtime_command(event)
+        if canonical == "runtime":
+            return await self._handle_topic_runtime_command(event)
 
         if canonical == "personality":
             return await self._handle_personality_command(event)
@@ -9281,14 +9354,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     skip_memory=True,
                                     enabled_toolsets=["memory"],
                                     session_id=session_entry.session_id,
+                                    session_db=self._session_db,
                                 )
                                 try:
                                     # The hygiene agent rotates the session
                                     # forward to a continuation id that becomes
                                     # the gateway session's live row. It must
-                                    # never finalize on close() (today it has no
-                                    # session_db so close() no-ops, but this
-                                    # guards a future where one is wired in).
+                                    # never finalize that continuation on close().
                                     _hyg_agent._end_session_on_close = False
                                     _hyg_agent._print_fn = lambda *a, **kw: None
 
@@ -9321,13 +9393,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     # Only rewrite the transcript when rotation produced
                                     # a NEW session id OR in-place compaction succeeded.
                                     # The danger this guards against (mirrors the
-                                    # /compress fix #44794/#39704): the hygiene agent is
-                                    # built WITHOUT a session_db, so _compress_context
-                                    # cannot rotate — if it also wasn't in-place, the
-                                    # session_id is unchanged for a FAILURE reason, and an
-                                    # unconditional rewrite_transcript() would DELETE the
-                                    # original messages and replace them with only the
-                                    # compressed summary (permanent data loss, #21301).
+                                    # /compress fix #44794/#39704): if SessionDB is
+                                    # unavailable, _compress_context cannot rotate. If it
+                                    # also wasn't in-place, an unconditional transcript
+                                    # rewrite would replace the original messages with
+                                    # only the compressed summary (data loss, #21301).
                                     if _hyg_rotated or _hyg_in_place:
                                         self.session_store.rewrite_transcript(
                                             session_entry.session_id, _compressed
@@ -9348,7 +9418,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                         logger.warning(
                                             "Gateway hygiene compression for session %s "
                                             "did not rotate or compact in place "
-                                            "(no session_db on the hygiene agent) — "
+                                            "(SessionDB unavailable or compression failed) — "
                                             "preserving the original transcript instead "
                                             "of overwriting it with the summary (#21301).",
                                             session_entry.session_id,
@@ -9599,6 +9669,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
             )
+
+            # The adapter only schedules work. Acknowledge the durable result
+            # after the agent turn itself has flushed to Hermes persistence.
+            delivery = getattr(event, "_async_delegation_delivery", None)
+            if delivery:
+                from tools.async_delegation import acknowledge_delivery
+                if not acknowledge_delivery(*delivery):
+                    logger.error(
+                        "Delegation turn persisted but acknowledgement failed: %s",
+                        delivery[0],
+                    )
+            control_event_id = getattr(event, "_control_event_id", None)
+            if control_event_id and self._codex_control_runtime is not None:
+                if not self._codex_control_runtime.store.acknowledge_outbox(control_event_id):
+                    logger.error("Control outbox acknowledgement failed: %s", control_event_id)
 
             # Stop persistent typing indicator now that the agent is done
             try:
@@ -13115,19 +13200,35 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             user_name=str(evt.get("user_name") or "").strip() or None,
         )
 
-    async def _inject_watch_notification(self, synth_text: str, evt: dict) -> None:
+    async def _inject_watch_notification(self, synth_text: str, evt: dict) -> bool:
         """Inject a watch-pattern notification as a synthetic message event.
 
         Routing must come from the queued watch event itself, not from whatever
         foreground message happened to be active when the queue was drained.
         """
+        origin_session_id = evt.get("origin_session_id")
+        session_key = str(evt.get("session_key") or "")
+        if origin_session_id and session_key:
+            self.session_store._ensure_loaded()
+            current_entry = self.session_store._entries.get(session_key)
+            if current_entry is None or current_entry.session_id != origin_session_id:
+                from tools.async_delegation import acknowledge_delivery
+                acknowledge_delivery(
+                    str(evt.get("delegation_id") or ""),
+                    evt.get("_async_ledger_path"),
+                )
+                logger.warning(
+                    "Discarded stale delegation completion after session reset: %s",
+                    evt.get("delegation_id"),
+                )
+                return True
         source = self._build_process_event_source(evt)
         if not source:
             logger.warning(
                 "Dropping watch notification with no routing metadata for process %s",
                 evt.get("session_id", "unknown"),
             )
-            return
+            return False
         platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
         adapter = None
         for p, a in self.adapters.items():
@@ -13135,15 +13236,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 adapter = a
                 break
         if not adapter:
-            return
+            return False
         try:
             synth_event = MessageEvent(
                 text=synth_text,
                 message_type=MessageType.TEXT,
                 source=source,
                 internal=True,
-                message_id=str(evt.get("message_id") or "").strip() or None,
+                message_id=(
+                    str(evt.get("message_id") or "").strip()
+                    or f"control:delegation:{evt.get('delegation_id', 'unknown')}"
+                ),
             )
+            synth_event._async_delegation_delivery = (
+                evt.get("delegation_id", ""),
+                evt.get("_async_ledger_path"),
+            )
+            synth_event._control_event_id = evt.get("control_event_id")
             logger.info(
                 "Watch pattern notification — injecting for %s chat=%s thread=%s",
                 platform_name,
@@ -13151,8 +13260,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 source.thread_id,
             )
             await adapter.handle_message(synth_event)
+            return True
         except Exception as e:
             logger.error("Watch notification injection error: %s", e)
+            return False
 
     def _enrich_async_delegation_routing(self, evt: dict) -> None:
         """Fill platform/chat_id/thread_id/chat_type on an async-delegation event.
@@ -13209,13 +13320,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         requeue.append(evt)
                 for evt in requeue:
                     _pr.completion_queue.put(evt)
+                deduped_events = []
+                seen_control_events = set()
                 for evt in async_events:
+                    event_id = evt.get("control_event_id")
+                    if event_id and event_id in seen_control_events:
+                        continue
+                    if event_id:
+                        seen_control_events.add(event_id)
+                    deduped_events.append(evt)
+                for evt in deduped_events:
                     self._enrich_async_delegation_routing(evt)
                     synth_text = _format_gateway_process_notification(evt)
                     if not synth_text:
                         continue
                     try:
-                        await self._inject_watch_notification(synth_text, evt)
+                        accepted = await self._inject_watch_notification(synth_text, evt)
+                        if not accepted:
+                            # Preserve an in-process retry path as well as the
+                            # durable restart path. The watcher will retry on
+                            # its next bounded polling interval.
+                            _pr.completion_queue.put(evt)
                     except Exception as e:
                         logger.error("Async delegation injection error: %s", e)
             except Exception as e:
@@ -15487,10 +15612,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 with _cache_lock:
                     cached = _cache.get(session_key)
                     if cached and cached[1] == _sig:
+                        _cached_agent = cached[0]
+                        if getattr(_cached_agent, "_codex_reseed_required", False):
+                            try:
+                                if self._codex_control_runtime is None:
+                                    raise RuntimeError("Codex control runtime unavailable")
+                                self._codex_control_runtime.prepare_reseed(
+                                    session_key=session_key,
+                                    session_id=session_id,
+                                    generation=int(_cached_agent._codex_control_generation),
+                                )
+                                evicted = self._agent_cache.pop(session_key, None)
+                                _ev_agent = evicted[0] if isinstance(evicted, tuple) and evicted else None
+                                if _ev_agent and _ev_agent is not _AGENT_PENDING_SENTINEL:
+                                    self._cleanup_agent_resources(_ev_agent)
+                                cached = None
+                                logger.info("Prepared verified Codex reseed for %s", session_key)
+                            except Exception as exc:
+                                # Keep using the old native thread if continuity cannot be verified.
+                                _cached_agent._codex_reseed_required = False
+                                logger.error("Codex reseed preparation failed for %s: %s", session_key, exc)
                         # cached[2] is the message_count at cache time;
                         # stale when a second process appended rows.
-                        _cached_mc = cached[2] if len(cached) > 2 else None
-                        if (
+                        _cached_mc = cached[2] if cached is not None and len(cached) > 2 else None
+                        if cached is None:
+                            pass
+                        elif (
                             _cached_mc is not None
                             and _current_msg_count is not None
                             and _current_msg_count != _cached_mc
@@ -15556,6 +15703,52 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
                 )
+                if turn_route["runtime"].get("api_mode") == "codex_app_server":
+                    control_plane_enabled = bool(
+                        cfg_get(
+                            user_config,
+                            "gateway",
+                            "codex_control_plane",
+                            "enabled",
+                            default=False,
+                        )
+                    )
+                    if control_plane_enabled:
+                        from agent.codex_control_context import (
+                            render_codex_stable_policy,
+                        )
+
+                        policy = render_codex_stable_policy(agent)
+                        agent._codex_developer_instructions = (
+                            policy.developer_instructions
+                        )
+                        agent._codex_policy_revision = policy.revision
+                        if self._codex_control_runtime is None:
+                            raise RuntimeError(
+                                "Codex control plane is enabled but unavailable"
+                            )
+                        prepared = self._codex_control_runtime.prepare_session(
+                            session_key=session_key,
+                            session_id=session_id,
+                            policy_revision=policy.revision,
+                        )
+                        agent._codex_scoped_home = str(prepared.codex_home)
+                        agent._codex_resume_thread_id = prepared.resume_thread_id
+                        agent._persist_codex_thread_id = prepared.persist_thread
+                        agent._codex_control_cleanup = prepared.cleanup
+                        agent._codex_control_generation = prepared.generation
+                        agent._codex_control_session_id = session_id
+                        prepared.bind_agent(agent)
+                    else:
+                        agent._codex_resume_thread_id = (
+                            self.session_store.get_codex_thread_id(session_key)
+                        )
+                        agent._persist_codex_thread_id = (
+                            lambda thread_id, key=session_key, sid=session_id:
+                            self.session_store.set_codex_thread_id(
+                                key, thread_id, expected_session_id=sid
+                            )
+                        )
                 if _cache_lock and _cache is not None:
                     with _cache_lock:
                         _cache[session_key] = (agent, _sig, _current_msg_count)

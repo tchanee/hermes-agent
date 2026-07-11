@@ -2794,6 +2794,31 @@ class SessionDB:
             result.append(msg)
         return result
 
+    def get_recent_messages(
+        self, session_id: str, *, limit: int = 32, include_inactive: bool = False
+    ) -> List[Dict[str, Any]]:
+        """Load a bounded insertion-ordered tail for handoff/recovery paths."""
+        limit = max(1, min(int(limit), 200))
+        active_clause = "" if include_inactive else " AND active = 1"
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM messages WHERE session_id = ?"
+                f"{active_clause} ORDER BY id DESC LIMIT ?",
+                (session_id, limit),
+            ).fetchall()
+        result = []
+        for row in reversed(rows):
+            msg = dict(row)
+            if "content" in msg:
+                msg["content"] = self._decode_content(msg["content"])
+            if msg.get("tool_calls"):
+                try:
+                    msg["tool_calls"] = json.loads(msg["tool_calls"])
+                except (json.JSONDecodeError, TypeError):
+                    msg["tool_calls"] = []
+            result.append(msg)
+        return result
+
     def get_messages_around(
         self,
         session_id: str,

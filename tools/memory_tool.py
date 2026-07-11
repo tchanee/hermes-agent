@@ -24,6 +24,7 @@ Design:
 """
 
 import json
+import hashlib
 import logging
 import os
 import tempfile
@@ -446,7 +447,14 @@ class MemoryStore:
 
         return self._success_response(target, "Entry removed.")
 
-    def apply_batch(self, target: str, operations: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def apply_batch(
+        self,
+        target: str,
+        operations: List[Dict[str, Any]],
+        *,
+        expected_revision: Optional[str] = None,
+        dry_run: bool = False,
+    ) -> Dict[str, Any]:
         """Apply a sequence of add/replace/remove ops to one target atomically.
 
         All operations are validated and applied against the FINAL budget --
@@ -476,6 +484,16 @@ class MemoryStore:
             bak = self._reload_target(target)
             if bak:
                 return _drift_error(self._path_for(target), bak)
+
+            current_revision = self._entries_revision(self._entries_for(target))
+            if expected_revision is not None and current_revision != expected_revision:
+                return {
+                    "success": False,
+                    "stale": True,
+                    "error": "Memory changed after this proposal was created; review and propose again.",
+                    "expected_revision": expected_revision,
+                    "current_revision": current_revision,
+                }
 
             # Work on a copy; only commit if the whole batch validates.
             working: List[str] = list(self._entries_for(target))
@@ -547,11 +565,28 @@ class MemoryStore:
                     "usage": f"{current:,}/{limit:,}",
                 }
 
+            if dry_run:
+                return {
+                    "success": True,
+                    "dry_run": True,
+                    "resulting_revision": self._entries_revision(working),
+                }
+
             # Commit.
             self._set_entries(target, working)
             self.save_to_disk(target)
 
         return self._success_response(target, f"Applied {len(operations)} operation(s).")
+
+    @staticmethod
+    def _entries_revision(entries: List[str]) -> str:
+        payload = json.dumps(entries, ensure_ascii=False, separators=(",", ":"))
+        return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def revision(self, target: str) -> str:
+        with self._file_lock(self._path_for(target)):
+            self._reload_target(target)
+            return self._entries_revision(self._entries_for(target))
 
     def _batch_error(self, target: str, message: str) -> Dict[str, Any]:
         """Build a batch-abort error that reports live (uncommitted) state."""
@@ -1083,7 +1118,5 @@ registry.register(
     check_fn=check_memory_requirements,
     emoji="🧠",
 )
-
-
 
 

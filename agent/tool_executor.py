@@ -393,6 +393,25 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     middleware_trace=list(middleware_trace),
                 )
             else:
+                from agent.delegation_governor import authorize_parent_tool
+
+                governor_message = authorize_parent_tool(agent, function_name)
+                if governor_message is not None:
+                    block_result = json.dumps({"error": governor_message}, ensure_ascii=False)
+                    _emit_terminal_post_tool_call(
+                        agent,
+                        function_name=function_name,
+                        function_args=function_args,
+                        result=block_result,
+                        effective_task_id=effective_task_id,
+                        tool_call_id=getattr(tool_call, "id", "") or "",
+                        status="blocked",
+                        error_type="delegation_governor_block",
+                        error_message=governor_message,
+                        middleware_trace=list(middleware_trace),
+                    )
+
+            if block_result is None:
                 guardrail_decision = agent._tool_guardrails.before_call(function_name, function_args)
                 if not guardrail_decision.allows_execution:
                     block_result = agent._guardrail_block_result(guardrail_decision)
@@ -874,9 +893,15 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
 
         _guardrail_block_decision: ToolGuardrailDecision | None = None
         if _block_msg is None:
-            guardrail_decision = agent._tool_guardrails.before_call(function_name, function_args)
-            if not guardrail_decision.allows_execution:
-                _guardrail_block_decision = guardrail_decision
+            from agent.delegation_governor import authorize_parent_tool
+
+            _block_msg = authorize_parent_tool(agent, function_name)
+            if _block_msg is not None:
+                _block_error_type = "delegation_governor_block"
+            else:
+                guardrail_decision = agent._tool_guardrails.before_call(function_name, function_args)
+                if not guardrail_decision.allows_execution:
+                    _guardrail_block_decision = guardrail_decision
 
         _execution_blocked = _block_msg is not None or _guardrail_block_decision is not None
 

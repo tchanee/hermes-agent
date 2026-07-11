@@ -24,7 +24,6 @@ from typing import Any, Dict, List
 
 logger = logging.getLogger(__name__)
 
-
 def _codex_note_to_tool_progress(note: dict) -> tuple[str, str, dict] | None:
     """Map a Codex app-server ``item/started`` notification to a Hermes
     tool-progress event ``(tool_name, preview, args)``.
@@ -249,7 +248,8 @@ def run_codex_app_server_turn(
     # Lazy session: one CodexAppServerSession per AIAgent instance.
     # Spawned on first turn, reused across turns, closed at AIAgent
     # shutdown (see _cleanup hook).
-    if not hasattr(agent, "_codex_session") or agent._codex_session is None:
+    new_codex_thread = not hasattr(agent, "_codex_session") or agent._codex_session is None
+    if new_codex_thread:
         from agent.runtime_cwd import resolve_agent_cwd
 
         cwd = getattr(agent, "session_cwd", None) or str(resolve_agent_cwd())
@@ -280,6 +280,18 @@ def run_codex_app_server_turn(
 
         agent._codex_session = CodexAppServerSession(
             cwd=cwd,
+            codex_home=getattr(agent, "_codex_scoped_home", None),
+            resume_thread_id=getattr(agent, "_codex_resume_thread_id", None),
+            on_thread_ready=getattr(agent, "_persist_codex_thread_id", None),
+            developer_instructions=getattr(
+                agent, "_codex_developer_instructions", None
+            ),
+            model=getattr(agent, "model", None),
+            trusted_mcp_servers=(
+                {"hermes-control"}
+                if getattr(agent, "_codex_scoped_home", None)
+                else {"hermes-tools"}
+            ),
             approval_callback=approval_callback,
             on_event=_on_codex_event,
         )
@@ -289,6 +301,8 @@ def run_codex_app_server_turn(
     # return reaches us. Do NOT append again — that would duplicate.
 
     try:
+        if getattr(agent, "_interrupt_requested", False):
+            agent._codex_session.request_interrupt()
         turn = agent._codex_session.run_turn(user_input=user_message)
     except Exception as exc:
         logger.exception("codex app-server turn failed")
@@ -333,6 +347,9 @@ def run_codex_app_server_turn(
     if turn.projected_messages:
         messages.extend(turn.projected_messages)
 
+    if turn.thread_id:
+        agent._codex_resume_thread_id = turn.thread_id
+
     # Counter ticks for the agent-improvement loop.
     # _turns_since_memory and _user_turn_count are ALREADY incremented
     # in the run_conversation() pre-loop block (lines ~11793-11817) so we
@@ -344,6 +361,19 @@ def run_codex_app_server_turn(
         getattr(agent, "_iters_since_skill", 0) + turn.tool_iterations
     )
     usage_result = _record_codex_app_server_usage(agent, turn)
+    try:
+        from hermes_cli.config import cfg_get, load_config
+
+        total = int((turn.token_usage_total or turn.token_usage_last or {}).get("totalTokens") or 0)
+        window = int(turn.model_context_window or 0)
+        threshold = float(cfg_get(
+            load_config(), "gateway", "codex_control_plane", "reseed_threshold", default=0.72
+        ))
+        if window > 0 and total / window >= max(0.25, min(threshold, 0.95)):
+            agent._codex_reseed_required = True
+            agent._codex_reseed_usage = {"total_tokens": total, "context_window": window}
+    except Exception:
+        logger.debug("Codex reseed threshold evaluation failed", exc_info=True)
     api_calls = 1
 
     # Now check the skill nudge AFTER iters were incremented — same

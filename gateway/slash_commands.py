@@ -44,6 +44,8 @@ from utils import (
 
 logger = logging.getLogger("gateway.run")
 
+_TOPIC_RUNTIME_CONFIG_LOCK = __import__("threading").RLock()
+
 
 class GatewaySlashCommandsMixin:
     """In-session slash-command handlers for GatewayRunner."""
@@ -1650,6 +1652,167 @@ class GatewaySlashCommandsMixin:
         prefix = "✓" if result.success else "✗"
         return f"{prefix} {result.message}"
 
+    async def _handle_topic_runtime_command(self, event: MessageEvent) -> str:
+        """Inspect or change only the current gateway topic's runtime."""
+        from gateway.run import _hermes_home, _load_gateway_config
+        from hermes_cli.codex_runtime_switch import check_codex_binary_ok
+
+        source = self._normalize_source_for_session_key(event.source)
+        session_key = self._session_key_for_source(source)
+        action = (event.get_command_args().strip().lower() or "status")
+        if action not in {"status", "codex", "hermes", "restore"}:
+            return "Usage: /runtime [status|codex|hermes|restore]"
+
+        config = _load_gateway_config()
+        if not isinstance(config, dict):
+            return "Cannot change runtime: config root must be a mapping."
+        gateway_cfg = config.get("gateway")
+        if gateway_cfg is None:
+            gateway_cfg = {}
+            config["gateway"] = gateway_cfg
+        if not isinstance(gateway_cfg, dict):
+            return "Cannot change runtime: gateway config must be a mapping."
+        overrides = gateway_cfg.get("session_model_overrides")
+        if overrides is None:
+            overrides = {}
+            gateway_cfg["session_model_overrides"] = overrides
+        if not isinstance(overrides, dict):
+            return "Cannot change runtime: gateway.session_model_overrides must be a mapping."
+        configured = dict(overrides.get(session_key) or {})
+        runtime_override = self._session_model_overrides.get(session_key) or {}
+        effective = runtime_override.get("api_mode", configured.get("api_mode"))
+        if action == "status" and not effective:
+            _, resolved = self._resolve_session_agent_runtime(
+                source=source, session_key=session_key, user_config=config
+            )
+            effective = resolved.get("api_mode") or "default"
+
+        if action == "status":
+            cached = None
+            cache_lock = getattr(self, "_agent_cache_lock", None)
+            if cache_lock is not None:
+                with cache_lock:
+                    entry = self._agent_cache.get(session_key)
+                cached = entry[0] if isinstance(entry, tuple) else entry
+            codex_session = getattr(cached, "_codex_session", None) if cached else None
+            live_thread_id = getattr(codex_session, "_thread_id", None)
+            session_store = getattr(self, "session_store", None)
+            persisted_thread_id = (
+                session_store.get_codex_thread_id(session_key)
+                if session_store is not None
+                else None
+            )
+            thread_id = live_thread_id or persisted_thread_id
+            alive = bool(codex_session and codex_session.is_alive())
+            turn_running = getattr(self, "_running_agents", {}).get(session_key) is not None
+            state = (
+                "turn running" if alive and turn_running
+                else "ready" if alive
+                else "resumable" if persisted_thread_id
+                else "stopped" if live_thread_id
+                else "not started"
+            )
+            try:
+                from tools.async_delegation import active_count
+                detached = active_count()
+            except Exception:
+                detached = 0
+            return (
+                f"Topic runtime: {effective}\n"
+                f"Session key: {session_key}\n"
+                "Gateway: running\n"
+                f"Codex thread: {state}"
+                + (f" ({thread_id[:8]})" if thread_id else "")
+                + f"\nDetached Hermes delegations: {detached}"
+            )
+
+        if action == "codex":
+            ok, version = check_codex_binary_ok()
+            if not ok:
+                return f"Cannot enable Codex runtime: {version or 'Codex CLI unavailable'}"
+            try:
+                from hermes_cli.codex_runtime_plugin_migration import migrate
+                report = migrate(config)
+                migration_note = (
+                    f"; Hermes MCP callback configured in {report.target_path}"
+                    if "hermes-tools" in report.migrated else ""
+                )
+            except Exception as exc:
+                return f"Cannot enable Codex runtime: MCP/plugin migration failed: {exc}"
+            configured["api_mode"] = "codex_app_server"
+            result_label = f"codex_app_server ({version}){migration_note}"
+        elif action == "hermes":
+            model_cfg = config.get("model") if isinstance(config.get("model"), dict) else {}
+            provider = (
+                configured.get("provider")
+                or runtime_override.get("provider")
+                or model_cfg.get("provider")
+            )
+            if not provider:
+                _, effective_runtime = self._resolve_session_agent_runtime(
+                    source=source, session_key=session_key, user_config=config
+                )
+                provider = effective_runtime.get("provider")
+            if provider and provider not in {"openai-codex", "xai-oauth"}:
+                return (
+                    f"Cannot select codex_responses for provider {provider!r}; "
+                    "use /runtime restore to use its configured Hermes runtime."
+                )
+            configured["api_mode"] = "codex_responses"
+            result_label = "Hermes agent loop (codex_responses)"
+        else:
+            configured.pop("api_mode", None)
+            result_label = "configured default"
+
+        if action in {"hermes", "restore"} and effective == "codex_app_server":
+            control = getattr(self, "_codex_control_runtime", None)
+            if control is not None:
+                entry = self.session_store.get_or_create_session(source)
+                try:
+                    control.prepare_runtime_rollback(
+                        session_key=session_key, session_id=entry.session_id
+                    )
+                except Exception as exc:
+                    return f"Cannot switch runtime: continuity handoff failed: {exc}"
+
+        # Re-read and merge under one process lock so simultaneous topic
+        # commands cannot overwrite each other's snapshots. The final read is
+        # intentionally immediately adjacent to the atomic write.
+        with _TOPIC_RUNTIME_CONFIG_LOCK:
+            latest = _load_gateway_config()
+            if not isinstance(latest, dict):
+                return "Cannot change runtime: configuration root changed concurrently."
+            latest_gateway = latest.get("gateway")
+            if latest_gateway is None:
+                latest_gateway = {}
+                latest["gateway"] = latest_gateway
+            if not isinstance(latest_gateway, dict):
+                return "Cannot change runtime: configuration structure changed concurrently."
+            latest_overrides = latest_gateway.get("session_model_overrides")
+            if latest_overrides is None:
+                latest_overrides = {}
+                latest_gateway["session_model_overrides"] = latest_overrides
+            if not isinstance(latest_overrides, dict):
+                return "Cannot change runtime: configuration structure changed concurrently."
+            latest_configured = dict(latest_overrides.get(session_key) or {})
+            if action == "restore":
+                latest_configured.pop("api_mode", None)
+            else:
+                latest_configured["api_mode"] = configured["api_mode"]
+            latest_overrides[session_key] = latest_configured
+            atomic_yaml_write(_hermes_home / "config.yaml", latest)
+        in_memory = dict(self._session_model_overrides.get(session_key) or {})
+        if action == "restore":
+            in_memory.pop("api_mode", None)
+        else:
+            in_memory["api_mode"] = configured["api_mode"]
+        if in_memory:
+            self._session_model_overrides[session_key] = in_memory
+        else:
+            self._session_model_overrides.pop(session_key, None)
+        self._evict_cached_agent(session_key)
+        return f"Topic runtime set to {result_label}. Other topics and cron are unchanged."
+
     async def _handle_personality_command(self, event: MessageEvent) -> str:
         """Handle /personality command - list or set a personality."""
         from gateway.run import _hermes_home, _load_gateway_config
@@ -2349,6 +2512,31 @@ class GatewaySlashCommandsMixin:
         args = raw_args.split() if raw_args else []
         session_key = self._session_key_for_source(event.source)
         config_path = _hermes_home / "config.yaml"
+
+        control = getattr(self, "_codex_control_runtime", None)
+        if control is not None and args:
+            action = args[0].lower()
+            proposal_id = args[1] if len(args) > 1 else ""
+            actor = f"{event.source.platform.value}:{event.source.user_id or '?'}"
+            if action in {"approve", "reject"} and proposal_id.startswith("cp_mem_"):
+                try:
+                    if action == "approve":
+                        proposal = control.approve_memory(proposal_id, actor=actor)
+                    else:
+                        proposal = control.reject_memory(proposal_id, actor=actor)
+                except KeyError:
+                    return f"Unknown Codex memory proposal: {proposal_id}"
+                return f"Codex memory proposal {proposal_id}: {proposal['state']}."
+            if action == "pending":
+                proposals = control.pending_memory()
+                if proposals:
+                    lines = ["Codex memory proposals awaiting approval:"]
+                    for proposal in proposals[:10]:
+                        lines.append(
+                            f"- {proposal['proposal_id']} [{proposal['target']}]: "
+                            f"{proposal['rationale'][:160]}"
+                        )
+                    return "\n".join(lines)
 
         def _set_approval(enabled: bool):
             import yaml

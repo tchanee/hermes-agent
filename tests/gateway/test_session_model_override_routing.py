@@ -82,6 +82,43 @@ def _explode_runtime_resolution():
     )
 
 
+def test_configured_session_override_survives_process_restart(monkeypatch):
+    session_key = "agent:main:telegram:group:-1003931971445:2"
+    config = {
+        "model": {"default": "gpt-5.6-terra"},
+        "gateway": {
+            "session_model_overrides": {
+                session_key: {
+                    "model": "gpt-5.6-sol",
+                    "provider": "openai-codex",
+                    "api_mode": "codex_app_server",
+                    "reasoning_effort": "xhigh",
+                }
+            }
+        },
+    }
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: config)
+    monkeypatch.setattr(
+        gateway_run,
+        "_resolve_runtime_agent_kwargs",
+        lambda: {
+            "provider": "openai-codex",
+            "api_key": "token",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_mode": "codex_responses",
+        },
+    )
+    runner = _make_runner()
+
+    model, runtime = runner._resolve_session_agent_runtime(session_key=session_key)
+    reasoning = runner._resolve_session_reasoning_config(session_key=session_key)
+
+    assert model == "gpt-5.6-sol"
+    assert runtime["provider"] == "openai-codex"
+    assert runtime["api_mode"] == "codex_app_server"
+    assert reasoning == {"enabled": True, "effort": "xhigh"}
+
+
 def test_run_agent_prefers_session_override_over_global_runtime(monkeypatch):
     monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
     monkeypatch.setattr(gateway_run, "load_dotenv", lambda *args, **kwargs: None)
@@ -260,4 +297,3 @@ fallback_providers:
     assert runtime_kwargs["api_key"] == "env-secret"
     assert runtime_kwargs["base_url"] == "https://fallback.example/v1"
     assert runtime_kwargs["model"] == "fallback-model"
-

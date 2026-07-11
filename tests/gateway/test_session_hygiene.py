@@ -310,6 +310,7 @@ async def test_session_hygiene_messages_stay_in_originating_topic(monkeypatch, t
         def __init__(self, **kwargs):
             self.model = kwargs.get("model")
             self.session_id = kwargs.get("session_id", "fake-session")
+            self.session_db = kwargs.get("session_db")
             self._print_fn = None
             self.shutdown_memory_provider = MagicMock()
             self.close = MagicMock()
@@ -351,7 +352,7 @@ async def test_session_hygiene_messages_stay_in_originating_topic(monkeypatch, t
     runner._running_agents = {}
     runner._pending_messages = {}
     runner._pending_approvals = {}
-    runner._session_db = None
+    runner._session_db = object()
     runner._is_user_authorized = lambda _source: True
     runner._set_session_env = lambda _context: None
     runner._run_agent = AsyncMock(
@@ -391,6 +392,7 @@ async def test_session_hygiene_messages_stay_in_originating_topic(monkeypatch, t
     # happens silently with server-side logging only.
     assert len(adapter.sent) == 0
     assert FakeCompressAgent.last_instance is not None
+    assert FakeCompressAgent.last_instance.session_db is runner._session_db
     FakeCompressAgent.last_instance.shutdown_memory_provider.assert_called_once()
     FakeCompressAgent.last_instance.close.assert_called_once()
 

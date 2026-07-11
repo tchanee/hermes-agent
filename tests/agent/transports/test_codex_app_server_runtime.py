@@ -144,7 +144,9 @@ class TestCodexAppServerModule:
 
 
 class TestSpawnEnvIsolation:
-    """The codex spawn must NOT rewrite HOME — codex's shell tool spawns
+    """Ordinary Codex spawns preserve HOME; scoped control spawns isolate it.
+
+    The ordinary runtime's shell tool spawns
     subprocesses (gh, git, npm, aws, gcloud, ...) that need to find their
     config in the real user $HOME. CODEX_HOME isolates codex's own state,
     HOME stays unchanged.
@@ -231,6 +233,9 @@ class TestSpawnEnvIsolation:
 
         monkeypatch.setattr(subprocess, "Popen", FakePopen)
         monkeypatch.setenv("HOME", "/users/alice")
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "telegram-secret")
+        monkeypatch.setenv("OPENAI_API_KEY", "provider-secret")
+        monkeypatch.setenv("SSH_AUTH_SOCK", "/tmp/agent.sock")
 
         client = cas.CodexAppServerClient(
             codex_bin="codex", codex_home="/tmp/profile/codex"
@@ -238,8 +243,12 @@ class TestSpawnEnvIsolation:
         client._closed = True
 
         assert captured["env"].get("CODEX_HOME") == "/tmp/profile/codex"
-        # And HOME still passes through unchanged
-        assert captured["env"].get("HOME") == "/users/alice"
+        # A scoped control-plane process must not discover user credentials
+        # through HOME or inherit gateway/provider secrets.
+        assert captured["env"].get("HOME") == "/tmp/profile/codex"
+        assert "TELEGRAM_BOT_TOKEN" not in captured["env"]
+        assert "OPENAI_API_KEY" not in captured["env"]
+        assert "SSH_AUTH_SOCK" not in captured["env"]
 
     def test_kanban_worker_adds_only_kanban_writable_root(self, monkeypatch):
         """Codex-runtime Kanban workers need to write board state outside

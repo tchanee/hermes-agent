@@ -1167,6 +1167,48 @@ class TestDelegationProviderIntegration(unittest.TestCase):
 
     @patch("tools.delegate_tool._load_config")
     @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_worker_tiers_select_routine_and_important_models(self, mock_creds, mock_cfg):
+        mock_cfg.return_value = {
+            "max_iterations": 45,
+            "model": "gpt-5.6-terra",
+            "provider": "openai-codex",
+            "reasoning_effort": "high",
+            "important_model": "gpt-5.6-sol",
+            "important_provider": "openai-codex",
+            "important_reasoning_effort": "xhigh",
+        }
+
+        def resolve(cfg, _parent):
+            return {
+                "model": cfg["model"],
+                "provider": "openai-codex",
+                "base_url": "https://chatgpt.com/backend-api/codex",
+                "api_key": "token",
+                "api_mode": "codex_responses",
+            }
+
+        mock_creds.side_effect = resolve
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            child = MagicMock()
+            child.run_conversation.return_value = {
+                "final_response": "done", "completed": True, "api_calls": 1
+            }
+            MockAgent.return_value = child
+
+            delegate_task(goal="routine lookup", tier="routine", parent_agent=parent)
+            routine_kwargs = MockAgent.call_args.kwargs
+            delegate_task(goal="critical analysis", tier="important", parent_agent=parent)
+            important_kwargs = MockAgent.call_args.kwargs
+
+        self.assertEqual(routine_kwargs["model"], "gpt-5.6-terra")
+        self.assertEqual(routine_kwargs["reasoning_config"], {"enabled": True, "effort": "high"})
+        self.assertEqual(important_kwargs["model"], "gpt-5.6-sol")
+        self.assertEqual(important_kwargs["reasoning_config"], {"enabled": True, "effort": "xhigh"})
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
     def test_config_provider_credentials_reach_child_agent(self, mock_creds, mock_cfg):
         """When delegation.provider is configured, child agent gets resolved credentials."""
         mock_cfg.return_value = {

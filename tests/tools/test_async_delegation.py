@@ -6,6 +6,7 @@ formatting, capacity rejection, and crash handling.
 """
 
 import queue
+import json
 import threading
 import time
 
@@ -16,7 +17,11 @@ from tools.process_registry import process_registry, format_process_notification
 
 
 @pytest.fixture(autouse=True)
-def _clean_state():
+def _clean_state(tmp_path, monkeypatch):
+    ledger_dir = tmp_path / "async_delegations"
+    ledger_dir.mkdir()
+    monkeypatch.setattr(ad, "_LEDGER_DIR", ledger_dir)
+    monkeypatch.setattr(ad, "_LEDGER_PATH", ledger_dir / "test.json")
     ad._reset_for_tests()
     while not process_registry.completion_queue.empty():
         process_registry.completion_queue.get_nowait()
@@ -24,6 +29,59 @@ def _clean_state():
     ad._reset_for_tests()
     while not process_registry.completion_queue.empty():
         process_registry.completion_queue.get_nowait()
+
+
+def test_restart_reconciles_running_delegation_as_interrupted():
+    ad._LEDGER_PATH.write_text(
+        '[{"delegation_id":"deleg_stale","goal":"verify restart",'
+        '"session_key":"agent:main:telegram:group:1:2","status":"running",'
+        '"role":"leaf","model":"m","dispatched_at":1}]',
+        encoding="utf-8",
+    )
+
+    assert ad.reconcile_orphaned_delegations() == 1
+    evt = _drain_one()
+    assert evt["delegation_id"] == "deleg_stale"
+    assert evt["status"] == "interrupted"
+    assert evt["exit_reason"] == "owner_process_exit"
+    assert ad._LEDGER_PATH.exists()
+    assert ad.acknowledge_delivery(evt["delegation_id"], evt["_async_ledger_path"])
+    assert not ad._LEDGER_PATH.exists()
+
+
+def test_reconcile_does_not_interrupt_live_owner(monkeypatch):
+    import gateway.status as status
+
+    ad._LEDGER_PATH.write_text(
+        json.dumps({
+            "owner_pid": 4242,
+            "owner_start_time": 99,
+            "records": [{"delegation_id": "deleg_live", "status": "running"}],
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(status, "get_process_start_time", lambda pid: 99)
+    assert ad.reconcile_orphaned_delegations() == 0
+    assert ad._LEDGER_PATH.exists()
+
+
+def test_reconcile_skips_malformed_records_without_crashing():
+    ad._LEDGER_PATH.write_text('{"records": null}', encoding="utf-8")
+    assert ad.reconcile_orphaned_delegations() == 0
+    assert ad._LEDGER_PATH.exists()
+
+
+def test_dispatch_rejects_and_rolls_back_when_ledger_write_fails(monkeypatch):
+    monkeypatch.setattr(
+        ad, "_write_ledger_locked", lambda: (_ for _ in ()).throw(OSError("disk full"))
+    )
+    result = ad.dispatch_async_delegation(
+        goal="g", context=None, toolsets=None, role="leaf", model="m",
+        session_key="", runner=lambda: {"status": "completed"},
+    )
+    assert result["status"] == "rejected"
+    assert "disk full" in result["error"]
+    assert ad.active_count() == 0
 
 
 def _drain_one(timeout=5.0):
@@ -127,7 +185,7 @@ def test_rich_reinjection_block_is_self_contained():
     text = format_process_notification(evt)
     assert text is not None
     for needle in [
-        "ASYNC DELEGATION COMPLETE",
+            "UNTRUSTED ASYNC DELEGATION DATA",
         "Compute the meaning of life",
         "User is a philosopher",
         "Toolsets: web",
@@ -218,6 +276,9 @@ def test_completed_records_pruned_to_cap():
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline and ad.active_count() > 0:
         time.sleep(0.05)
+    while not process_registry.completion_queue.empty():
+        evt = process_registry.completion_queue.get_nowait()
+        ad.acknowledge_delivery(evt["delegation_id"], evt["_async_ledger_path"])
     assert len(ad.list_async_delegations()) <= ad._MAX_RETAINED_COMPLETED
 
 
@@ -540,7 +601,7 @@ def test_gateway_formatter_renders_async_block():
 
     txt = _format_gateway_process_notification(_make_async_evt())
     assert txt is not None
-    assert "ASYNC DELEGATION COMPLETE" in txt
+    assert "UNTRUSTED ASYNC DELEGATION DATA" in txt
     assert "Found the bug in test_foo" in txt
     assert "Investigate flaky test" in txt
 
@@ -587,5 +648,3 @@ def test_gateway_cli_origin_event_left_unrouted():
     evt = _make_async_evt(session_key="")
     runner._enrich_async_delegation_routing(evt)
     assert "platform" not in evt
-
-

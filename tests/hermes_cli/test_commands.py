@@ -117,6 +117,12 @@ class TestResolveCommand:
         assert topic.name == "topic"
         assert "topic" in GATEWAY_KNOWN_COMMANDS
 
+    def test_runtime_is_topic_scoped_gateway_command(self):
+        runtime = resolve_command("runtime")
+        assert runtime is not None
+        assert runtime.gateway_only is True
+        assert "runtime" in GATEWAY_KNOWN_COMMANDS
+
     def test_leading_slash_stripped(self):
         assert resolve_command("/help").name == "help"
         assert resolve_command("/bg").name == "background"

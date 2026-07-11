@@ -82,6 +82,7 @@ class TurnResult:
     # of riding a CPU-spinning or auth-broken process. Mirrors openclaw
     # beta.8's "retire timed-out app-server clients" fix.
     should_retire: bool = False
+    turn_started: bool = False
 
 
 # Markers we accept as terminal even when codex never emits turn/completed.
@@ -206,6 +207,11 @@ class CodexAppServerSession:
         permission_profile: Optional[str] = None,
         approval_callback: Optional[Callable[..., str]] = None,
         on_event: Optional[Callable[[dict], None]] = None,
+        resume_thread_id: Optional[str] = None,
+        on_thread_ready: Optional[Callable[[str], Any]] = None,
+        developer_instructions: Optional[str] = None,
+        model: Optional[str] = None,
+        trusted_mcp_servers: Optional[set[str]] = None,
         request_routing: Optional[_ServerRequestRouting] = None,
         client_factory: Optional[Callable[..., CodexAppServerClient]] = None,
     ) -> None:
@@ -220,6 +226,11 @@ class CodexAppServerSession:
         )
         self._approval_callback = approval_callback
         self._on_event = on_event  # Display hook (kawaii spinner ticks etc.)
+        self._resume_thread_id = resume_thread_id
+        self._on_thread_ready = on_thread_ready
+        self._developer_instructions = developer_instructions
+        self._model = model
+        self._trusted_mcp_servers = set(trusted_mcp_servers or {"hermes-tools"})
         self._routing = request_routing or _ServerRequestRouting()
         self._client_factory = client_factory or CodexAppServerClient
 
@@ -267,7 +278,16 @@ class CodexAppServerSession:
         # Users who want a write-capable profile configure it in their
         # ~/.codex/config.toml the same way they would for any codex usage.
         params: dict[str, Any] = {"cwd": self._cwd}
-        result = self._client.request("thread/start", params, timeout=15)
+        if self._model:
+            params["model"] = self._model
+        if self._resume_thread_id:
+            result = self._client.request(
+                "thread/resume", {"threadId": self._resume_thread_id}, timeout=15
+            )
+        else:
+            if self._developer_instructions:
+                params["developerInstructions"] = self._developer_instructions
+            result = self._client.request("thread/start", params, timeout=15)
         # Cross-fill thread.id/sessionId — different codex versions have
         # serialized this under either key. Mirrors openclaw beta.8's
         # tolerance fix so future codex drops/renames don't KeyError us
@@ -288,8 +308,14 @@ class CodexAppServerSession:
                 ),
             )
         self._thread_id = thread_id
+        if self._on_thread_ready is not None:
+            persisted = self._on_thread_ready(thread_id)
+            if persisted is False:
+                self._thread_id = None
+                raise RuntimeError("Hermes refused to persist the Codex thread binding")
         logger.info(
-            "codex app-server thread started: id=%s profile=%s cwd=%s",
+            "codex app-server thread %s: id=%s profile=%s cwd=%s",
+            "resumed" if self._resume_thread_id else "started",
             self._thread_id[:8],
             self._permission_profile,
             self._cwd,
@@ -307,6 +333,9 @@ class CodexAppServerSession:
                 pass
             self._client = None
         self._thread_id = None
+
+    def is_alive(self) -> bool:
+        return bool(self._client is not None and self._client.is_alive())
 
     def __enter__(self) -> "CodexAppServerSession":
         return self
@@ -386,9 +415,14 @@ class CodexAppServerSession:
         # the caller can render — instead of bubbling raw codex exceptions
         # up to AIAgent.run_conversation.
         result = TurnResult()
+        if self._interrupt_event.is_set():
+            self._interrupt_event.clear()
+            result.interrupted = True
+            result.error = "user interrupted before Codex startup"
+            return result
         try:
             self.ensure_started()
-        except (CodexAppServerError, TimeoutError) as exc:
+        except Exception as exc:
             result.error = self._format_error_with_stderr(
                 "codex app-server startup failed", exc
             )
@@ -399,7 +433,11 @@ class CodexAppServerSession:
         assert self._client is not None and self._thread_id is not None
         result.thread_id = self._thread_id
 
-        self._interrupt_event.clear()
+        if self._interrupt_event.is_set():
+            self._interrupt_event.clear()
+            result.interrupted = True
+            result.error = "user interrupted during Codex startup"
+            return result
         projector = CodexEventProjector()
 
         user_input_text = _coerce_turn_input_text(user_input)
@@ -442,6 +480,7 @@ class CodexAppServerSession:
             result.should_retire = True
             return result
 
+        result.turn_started = True
         result.turn_id = (ts.get("turn") or {}).get("id")
         deadline = time.monotonic() + turn_timeout
         turn_complete = False
@@ -617,6 +656,7 @@ class CodexAppServerSession:
                 )
             result.should_retire = True
 
+        self._interrupt_event.clear()
         return result
 
     # ---------- internals ----------
@@ -676,7 +716,7 @@ class CodexAppServerSession:
             # servers we decline so the user explicitly opts in via
             # codex's own auth flow.
             server_name = params.get("serverName") or ""
-            if server_name == "hermes-tools":
+            if server_name in self._trusted_mcp_servers:
                 self._client.respond(
                     rid,
                     {"action": "accept", "content": None, "_meta": None},

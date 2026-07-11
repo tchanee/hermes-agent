@@ -2438,6 +2438,12 @@ class AIAgent:
                 child.interrupt(message)
             except Exception as e:
                 logger.debug("Failed to propagate interrupt to child agent: %s", e)
+        codex_session = getattr(self, "_codex_session", None)
+        if codex_session is not None:
+            try:
+                codex_session.request_interrupt()
+            except Exception as e:
+                logger.debug("Failed to interrupt Codex app-server turn: %s", e)
         if not self.quiet_mode:
             print("\n⚡ Interrupt requested" + (f": '{message[:40]}...'" if message and len(message) > 40 else f": '{message}'" if message else ""))
 
@@ -3174,6 +3180,21 @@ class AIAgent:
         except Exception:
             pass
 
+        try:
+            codex_session = getattr(self, "_codex_session", None)
+            if codex_session is not None:
+                codex_session.close()
+                self._codex_session = None
+        except Exception:
+            pass
+        try:
+            cleanup = getattr(self, "_codex_control_cleanup", None)
+            if callable(cleanup):
+                cleanup()
+                self._codex_control_cleanup = None
+        except Exception:
+            pass
+
         # Close the OpenAI/httpx client to release sockets immediately.
         try:
             client = getattr(self, "client", None)
@@ -3236,6 +3257,21 @@ class AIAgent:
             if client is not None:
                 self._close_openai_client(client, reason="agent_close", shared=True)
                 self.client = None
+        except Exception:
+            pass
+
+        try:
+            codex_session = getattr(self, "_codex_session", None)
+            if codex_session is not None:
+                codex_session.close()
+                self._codex_session = None
+        except Exception:
+            pass
+        try:
+            cleanup = getattr(self, "_codex_control_cleanup", None)
+            if callable(cleanup):
+                cleanup()
+                self._codex_control_cleanup = None
         except Exception:
             pass
 
@@ -5236,6 +5272,7 @@ class AIAgent:
             acp_command=function_args.get("acp_command"),
             acp_args=function_args.get("acp_args"),
             role=function_args.get("role"),
+            tier=function_args.get("tier"),
             background=(not _is_subagent),
             parent_agent=self,
         )

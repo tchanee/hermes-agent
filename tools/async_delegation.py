@@ -37,6 +37,9 @@ logic stays in one place.
 from __future__ import annotations
 
 import logging
+import json
+import os
+from pathlib import Path
 import threading
 import time
 import uuid
@@ -44,6 +47,8 @@ import weakref
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures.thread import _worker
 from typing import Any, Callable, Dict, List, Optional
+
+from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
 
@@ -96,10 +101,113 @@ _records_lock = threading.Lock()
 # delegation_id -> record dict. Kept for the lifetime of the run plus a short
 # tail after completion so `list_async_delegations()` can show recent results.
 _records: Dict[str, Dict[str, Any]] = {}
+_lifecycle_observers: List[Callable[[Dict[str, Any], Dict[str, Any], str], Optional[str]]] = []
 
 _DEFAULT_MAX_ASYNC_CHILDREN = 3
 # How many completed records to retain for status queries before pruning.
 _MAX_RETAINED_COMPLETED = 50
+try:
+    from gateway.status import get_process_start_time
+    _OWNER_START_TIME = get_process_start_time(os.getpid())
+except Exception:
+    _OWNER_START_TIME = None
+_LEDGER_DIR = get_hermes_home() / "async_delegations"
+_LEDGER_PATH = _LEDGER_DIR / f"{os.getpid()}-{_OWNER_START_TIME or 'unknown'}.json"
+
+
+def _serializable_record(record: Dict[str, Any]) -> Dict[str, Any]:
+    return {k: v for k, v in record.items() if k not in {"interrupt_fn", "steer_fn"}}
+
+
+def _write_ledger_locked() -> None:
+    """Persist active work so a replacement gateway can reconcile it."""
+    active = [
+        _serializable_record(r)
+        for r in _records.values()
+        if r.get("status") in {"running", "pending_delivery"}
+    ]
+    _LEDGER_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = _LEDGER_PATH.with_suffix(f".tmp.{os.getpid()}")
+    payload = {
+        "owner_pid": os.getpid(),
+        "owner_start_time": _OWNER_START_TIME,
+        "records": active,
+    }
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, _LEDGER_PATH)
+
+
+def reconcile_orphaned_delegations() -> int:
+    """Emit interrupted events for work abandoned by a previous process."""
+    count = 0
+    candidates = set(_LEDGER_DIR.glob("*.json")) if _LEDGER_DIR.exists() else set()
+    if _LEDGER_PATH.exists():
+        candidates.add(_LEDGER_PATH)
+    for path in candidates:
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.warning("Could not read async delegation ledger %s: %s", path, exc)
+            continue
+        owner_pid = raw.get("owner_pid") if isinstance(raw, dict) else None
+        owner_start = raw.get("owner_start_time") if isinstance(raw, dict) else None
+        records = raw.get("records", []) if isinstance(raw, dict) else raw if isinstance(raw, list) else []
+        if not isinstance(records, list):
+            logger.error(
+                "Skipping malformed async delegation ledger %s: records is not a list",
+                path,
+            )
+            continue
+        if owner_pid:
+            try:
+                from gateway.status import get_process_start_time
+                if get_process_start_time(int(owner_pid)) == owner_start:
+                    continue
+            except Exception:
+                continue
+        now = time.time()
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            if record.get("status") == "pending_delivery":
+                result = record.get("delivery_result") or {}
+                delivery_status = record.get("delivery_status") or result.get("status") or "completed"
+            elif record.get("status") == "running":
+                record["status"] = "pending_delivery"
+                record["completed_at"] = now
+                delivery_status = "interrupted"
+                result = {
+                    "status": "interrupted",
+                    "summary": None,
+                    "error": "Owning Hermes process exited before this delegated worker reported completion.",
+                    "api_calls": 0,
+                    "duration_seconds": round(now - float(record.get("dispatched_at") or now), 2),
+                    "exit_reason": "owner_process_exit",
+                }
+                record["delivery_result"] = result
+                record["delivery_status"] = delivery_status
+            else:
+                continue
+            record["ledger_path"] = str(path)
+            if record.get("is_batch"):
+                enqueued = _push_batch_completion_event(record, result, delivery_status)
+            else:
+                enqueued = _push_completion_event(record, result, delivery_status)
+            if enqueued:
+                count += 1
+        # Keep pending deliveries durable until the gateway acknowledges that
+        # their synthetic turn was accepted. A crash may redeliver, but cannot
+        # silently discard the result.
+        try:
+            tmp = path.with_suffix(f".tmp.{os.getpid()}")
+            payload = {"owner_pid": owner_pid, "owner_start_time": owner_start, "records": records}
+            tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            os.replace(tmp, path)
+        except OSError as exc:
+            logger.error("Could not persist reconciled delegation ledger %s: %s", path, exc)
+    if count:
+        logger.warning("Reconciled %d orphaned async delegation(s) after restart", count)
+    return count
 
 
 def _get_executor(max_workers: int) -> ThreadPoolExecutor:
@@ -125,6 +233,69 @@ def active_count() -> int:
     """Number of async delegations currently running."""
     with _records_lock:
         return sum(1 for r in _records.values() if r.get("status") == "running")
+
+
+def register_lifecycle_observer(callback) -> None:
+    with _records_lock:
+        if callback not in _lifecycle_observers:
+            _lifecycle_observers.append(callback)
+
+
+def unregister_lifecycle_observer(callback) -> None:
+    with _records_lock:
+        if callback in _lifecycle_observers:
+            _lifecycle_observers.remove(callback)
+
+
+def _notify_lifecycle(record: Dict[str, Any], result: Dict[str, Any], status: str) -> Optional[str]:
+    with _records_lock:
+        observers = list(_lifecycle_observers)
+    event_id = None
+    for callback in observers:
+        try:
+            event_id = callback(record, result, status) or event_id
+        except Exception:
+            logger.exception("Async delegation lifecycle observer failed")
+    return event_id
+
+
+def acknowledge_delivery(delegation_id: str, ledger_path: Optional[str]) -> bool:
+    """Remove one durably queued completion after gateway acceptance."""
+    if not delegation_id or not ledger_path:
+        return False
+    path = Path(ledger_path)
+    with _records_lock:
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            records = raw.get("records", []) if isinstance(raw, dict) else raw
+            remaining = [
+                record for record in records
+                if not isinstance(record, dict)
+                or record.get("delegation_id") != delegation_id
+            ]
+            if len(remaining) == len(records):
+                return False
+            if remaining:
+                payload = dict(raw) if isinstance(raw, dict) else {"records": remaining}
+                payload["records"] = remaining
+                tmp = path.with_suffix(f".tmp.{os.getpid()}")
+                tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+                os.replace(tmp, path)
+            else:
+                path.unlink(missing_ok=True)
+            local = _records.get(delegation_id)
+            if local and local.get("status") == "pending_delivery":
+                local["status"] = local.get("delivery_status") or "completed"
+                local.pop("delivery_result", None)
+                local.pop("delivery_status", None)
+                local.pop("ledger_path", None)
+                _prune_completed_locked()
+            return True
+        except FileNotFoundError:
+            return False
+        except Exception as exc:
+            logger.error("Could not acknowledge async delegation %s: %s", delegation_id, exc)
+            return False
 
 
 def _new_delegation_id() -> str:
@@ -159,6 +330,7 @@ def dispatch_async_delegation(
     session_key: str,
     runner: Callable[[], Dict[str, Any]],
     interrupt_fn: Optional[Callable[[], None]] = None,
+    steer_fn: Optional[Callable[[str], bool]] = None,
     max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN,
 ) -> Dict[str, Any]:
     """Spawn ``runner`` on the daemon executor and return a handle immediately.
@@ -204,11 +376,14 @@ def dispatch_async_delegation(
         "dispatched_at": dispatched_at,
         "completed_at": None,
         "interrupt_fn": interrupt_fn,
+        "steer_fn": steer_fn,
     }
     # Capacity check and record insert under ONE lock hold — checking
     # active_count() separately would let two concurrent dispatches (e.g.
     # from different gateway sessions) both pass the check and exceed the cap.
     with _records_lock:
+        if delegation_id in _records:
+            return {"status": "rejected", "error": "delegation id already exists"}
         running = sum(
             1 for r in _records.values() if r.get("status") == "running"
         )
@@ -224,6 +399,11 @@ def dispatch_async_delegation(
                 ),
             }
         _records[delegation_id] = record
+        try:
+            _write_ledger_locked()
+        except Exception as exc:
+            _records.pop(delegation_id, None)
+            return {"status": "rejected", "error": f"Could not persist async delegation: {exc}"}
 
     executor = _get_executor(max_async_children)
 
@@ -251,6 +431,7 @@ def dispatch_async_delegation(
     except Exception as exc:  # pragma: no cover — pool submit failure is rare
         with _records_lock:
             _records.pop(delegation_id, None)
+            _write_ledger_locked()
         return {
             "status": "rejected",
             "error": f"Failed to schedule async delegation: {exc}",
@@ -269,19 +450,33 @@ def _finalize(delegation_id: str, result: Dict[str, Any], status: str) -> None:
         record = _records.get(delegation_id)
         if record is None:
             return
-        record["status"] = status
+        record["status"] = "pending_delivery"
         record["completed_at"] = time.time()
+        record["delivery_result"] = result
+        record["delivery_status"] = status
+        record["ledger_path"] = str(_LEDGER_PATH)
         record["interrupt_fn"] = None  # drop the closure; child is done
+        record["steer_fn"] = None
         # Snapshot fields needed for the event while holding the lock.
         event_record = dict(record)
-        _prune_completed_locked()
+    control_event_id = _notify_lifecycle(event_record, result, status)
+    with _records_lock:
+        record = _records.get(delegation_id)
+        if record is None:
+            return
+        if control_event_id:
+            record["control_event_id"] = control_event_id
+            event_record["control_event_id"] = control_event_id
+        _write_ledger_locked()
 
-    _push_completion_event(event_record, result, status)
+    enqueued = _push_completion_event(event_record, result, status)
+    if not enqueued:
+        logger.error("Async delegation %s remains pending durable delivery", delegation_id)
 
 
 def _push_completion_event(
     record: Dict[str, Any], result: Dict[str, Any], status: str
-) -> None:
+) -> bool:
     """Push a type='async_delegation' event onto the shared completion queue.
 
     Best-effort: a failure here must not crash the worker, but it WOULD mean a
@@ -295,7 +490,7 @@ def _push_completion_event(
             "result lost: %s",
             record.get("delegation_id"), exc,
         )
-        return
+        return False
 
     summary = result.get("summary")
     error = result.get("error")
@@ -323,15 +518,19 @@ def _push_completion_event(
         "dispatched_at": dispatched_at,
         "completed_at": completed_at,
         "exit_reason": result.get("exit_reason"),
+        "_async_ledger_path": record.get("ledger_path"),
+        "control_event_id": record.get("control_event_id"),
     }
     try:
         process_registry.completion_queue.put(evt)
+        return True
     except Exception as exc:  # pragma: no cover
         logger.error(
             "Async delegation %s: failed to enqueue completion event; "
             "result lost: %s",
             record.get("delegation_id"), exc,
         )
+        return False
 
 
 def dispatch_async_delegation_batch(
@@ -344,7 +543,11 @@ def dispatch_async_delegation_batch(
     session_key: str,
     runner: Callable[[], Dict[str, Any]],
     interrupt_fn: Optional[Callable[[], None]] = None,
+    steer_fn: Optional[Callable[[str], bool]] = None,
     max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN,
+    delegation_id: Optional[str] = None,
+    origin_session_id: Optional[str] = None,
+    origin_generation: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Dispatch a WHOLE fan-out batch as ONE background unit.
 
@@ -366,7 +569,7 @@ def dispatch_async_delegation_batch(
     ``{"status": "rejected", "error": ...}`` when the async pool is at
     capacity.
     """
-    delegation_id = _new_delegation_id()
+    delegation_id = delegation_id or _new_delegation_id()
     dispatched_at = time.time()
     n = len(goals)
     # A combined goal label for status listings / the completion header.
@@ -386,9 +589,14 @@ def dispatch_async_delegation_batch(
         "dispatched_at": dispatched_at,
         "completed_at": None,
         "interrupt_fn": interrupt_fn,
+        "steer_fn": steer_fn,
         "is_batch": True,
+        "origin_session_id": origin_session_id,
+        "origin_generation": origin_generation,
     }
     with _records_lock:
+        if delegation_id in _records:
+            return {"status": "rejected", "error": "delegation id already exists"}
         running = sum(
             1 for r in _records.values() if r.get("status") == "running"
         )
@@ -403,6 +611,11 @@ def dispatch_async_delegation_batch(
                 ),
             }
         _records[delegation_id] = record
+        try:
+            _write_ledger_locked()
+        except Exception as exc:
+            _records.pop(delegation_id, None)
+            return {"status": "rejected", "error": f"Could not persist async delegation batch: {exc}"}
 
     executor = _get_executor(max_async_children)
 
@@ -436,6 +649,7 @@ def dispatch_async_delegation_batch(
     except Exception as exc:  # pragma: no cover
         with _records_lock:
             _records.pop(delegation_id, None)
+            _write_ledger_locked()
         return {
             "status": "rejected",
             "error": f"Failed to schedule async delegation batch: {exc}",
@@ -456,12 +670,34 @@ def _finalize_batch(
         record = _records.get(delegation_id)
         if record is None:
             return
-        record["status"] = status
+        record["status"] = "pending_delivery"
         record["completed_at"] = time.time()
+        record["delivery_result"] = combined
+        record["delivery_status"] = status
+        record["ledger_path"] = str(_LEDGER_PATH)
         record["interrupt_fn"] = None
+        record["steer_fn"] = None
         event_record = dict(record)
-        _prune_completed_locked()
+    control_event_id = _notify_lifecycle(event_record, combined, status)
+    with _records_lock:
+        record = _records.get(delegation_id)
+        if record is None:
+            return
+        if control_event_id:
+            record["control_event_id"] = control_event_id
+            event_record["control_event_id"] = control_event_id
+        _write_ledger_locked()
 
+    enqueued = _push_batch_completion_event(event_record, combined, status)
+    if not enqueued:
+        logger.error("Async delegation batch %s remains pending durable delivery", delegation_id)
+
+
+def _push_batch_completion_event(
+    event_record: Dict[str, Any], combined: Dict[str, Any], status: str
+) -> bool:
+    """Push a batch completion, including restart-interrupted batches."""
+    delegation_id = event_record.get("delegation_id", "unknown")
     try:
         from tools.process_registry import process_registry
     except Exception as exc:  # pragma: no cover
@@ -470,7 +706,7 @@ def _finalize_batch(
             "failed; result lost: %s",
             delegation_id, exc,
         )
-        return
+        return False
 
     dispatched_at = event_record.get("dispatched_at") or time.time()
     completed_at = event_record.get("completed_at") or time.time()
@@ -493,15 +729,21 @@ def _finalize_batch(
         "total_duration_seconds": combined.get("total_duration_seconds"),
         "dispatched_at": dispatched_at,
         "completed_at": completed_at,
+        "_async_ledger_path": event_record.get("ledger_path"),
+        "origin_session_id": event_record.get("origin_session_id"),
+        "origin_generation": event_record.get("origin_generation"),
+        "control_event_id": event_record.get("control_event_id"),
     }
     try:
         process_registry.completion_queue.put(evt)
+        return True
     except Exception as exc:  # pragma: no cover
         logger.error(
             "Async delegation batch %s: failed to enqueue completion event; "
             "result lost: %s",
             delegation_id, exc,
         )
+        return False
 
 
 def list_async_delegations() -> List[Dict[str, Any]]:
@@ -511,7 +753,7 @@ def list_async_delegations() -> List[Dict[str, Any]]:
     """
     with _records_lock:
         return [
-            {k: v for k, v in r.items() if k != "interrupt_fn"}
+            {k: v for k, v in r.items() if k not in {"interrupt_fn", "steer_fn"}}
             for r in _records.values()
         ]
 
@@ -544,6 +786,28 @@ def interrupt_all(reason: str = "shutdown") -> int:
     return count
 
 
+def interrupt_delegation(delegation_id: str, reason: str = "cancelled") -> bool:
+    """Signal one detached delegation to stop."""
+    with _records_lock:
+        record = _records.get(delegation_id)
+        fn = record.get("interrupt_fn") if record and record.get("status") == "running" else None
+    if not callable(fn):
+        return False
+    fn()
+    logger.info("Interrupted async delegation %s (%s)", delegation_id, reason)
+    return True
+
+
+def steer_delegation(delegation_id: str, message: str) -> bool:
+    """Inject a user steering note into one running detached delegation."""
+    if not str(message or "").strip():
+        return False
+    with _records_lock:
+        record = _records.get(delegation_id)
+        fn = record.get("steer_fn") if record and record.get("status") == "running" else None
+    return bool(fn(str(message).strip())) if callable(fn) else False
+
+
 def _reset_for_tests() -> None:
     """Test-only: clear all state and tear down the executor."""
     global _executor, _executor_max_workers
@@ -554,3 +818,7 @@ def _reset_for_tests() -> None:
         _executor_max_workers = 0
     with _records_lock:
         _records.clear()
+        try:
+            _LEDGER_PATH.unlink(missing_ok=True)
+        except OSError:
+            pass

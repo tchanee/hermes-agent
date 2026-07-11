@@ -54,6 +54,7 @@ def _make_codex_agent():
     real provider. We pass api_mode explicitly so the constructor takes the
     fast path for direct credentials."""
     return run_agent.AIAgent(
+        model="gpt-5.6-terra",
         api_key="stub",
         base_url="https://stub.invalid",
         provider="openai",
@@ -71,6 +72,71 @@ class TestApiModeAccepted:
 
 
 class TestRunConversationCodexPath:
+    def test_pre_turn_failure_fails_closed_without_replay(self, monkeypatch):
+        def fail_before_turn(self, user_input: str, **kwargs):
+            return TurnResult(
+                error="startup failed",
+                should_retire=True,
+                turn_started=False,
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fail_before_turn)
+        agent = _make_codex_agent()
+        result = agent._run_codex_app_server_turn(
+            user_message="hello",
+            original_user_message="hello",
+            messages=[{"role": "user", "content": "hello"}],
+            effective_task_id="test",
+        )
+        assert result["partial"] is True
+        assert result["completed"] is False
+        assert result["error"] == "startup failed"
+
+    def test_post_turn_failure_is_not_replayed(self, monkeypatch):
+        def fail_after_turn(self, user_input: str, **kwargs):
+            return TurnResult(
+                error="transport lost",
+                turn_started=True,
+                turn_id="turn-accepted",
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fail_after_turn)
+        agent = _make_codex_agent()
+        result = agent._run_codex_app_server_turn(
+            user_message="hello",
+            original_user_message="hello",
+            messages=[{"role": "user", "content": "hello"}],
+            effective_task_id="test",
+        )
+        assert "_fallback_to_codex_responses" not in result
+        assert result["partial"] is True
+        assert result["error"] == "transport lost"
+
+    def test_pre_turn_failure_does_not_change_configured_runtime(self, monkeypatch):
+        def fail_before_turn(self, user_input: str, **kwargs):
+            return TurnResult(error="startup failed", should_retire=True)
+
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fail_before_turn)
+        agent = _make_codex_agent()
+        result = agent.run_conversation("hello")
+        assert agent.api_mode == "codex_app_server"
+        assert result["partial"] is True
+
+    def test_agent_interrupt_reaches_codex_session(self):
+        agent = _make_codex_agent()
+        session = MagicMock()
+        agent._codex_session = session
+        agent.interrupt("new message")
+        session.request_interrupt.assert_called_once_with()
+
+    def test_release_clients_closes_codex_session(self):
+        agent = _make_codex_agent()
+        session = MagicMock()
+        agent._codex_session = session
+        agent.release_clients()
+        session.close.assert_called_once_with()
+        assert agent._codex_session is None
+
     def test_run_conversation_returns_codex_shape(self, fake_session):
         agent = _make_codex_agent()
         # No background review fork during tests
@@ -588,4 +654,3 @@ class TestCodexToolProgressBridge:
 
         assert "on_event" in captured_init and captured_init["on_event"] is not None
         assert ("tool.started", "exec_command", "pytest") in events
-

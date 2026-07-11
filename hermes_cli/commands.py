@@ -130,6 +130,10 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("codex-runtime", "Toggle codex app-server runtime for OpenAI/Codex models",
                "Configuration", aliases=("codex_runtime",),
                args_hint="[auto|codex_app_server]"),
+    CommandDef("runtime", "Select the agent runtime for this messaging topic",
+               "Configuration", gateway_only=True,
+               args_hint="[status|codex|hermes|restore]",
+               subcommands=("status", "codex", "hermes", "restore")),
 
     CommandDef("personality", "Set a predefined personality", "Configuration",
                args_hint="[name]"),

@@ -365,6 +365,15 @@ def _normalize_role(r: Optional[str]) -> str:
     return "leaf"
 
 
+def _normalize_tier(value: Optional[str]) -> str:
+    """Normalize worker quality tier; routine is the safe default."""
+    tier = str(value or "routine").strip().lower()
+    if tier in {"routine", "important"}:
+        return tier
+    logger.warning("Unknown delegate_task tier=%r, coercing to 'routine'", value)
+    return "routine"
+
+
 def _get_max_concurrent_children() -> int:
     """Read delegation.max_concurrent_children from config, falling back to
     DELEGATION_MAX_CONCURRENT_CHILDREN env var, then the default (3).
@@ -999,6 +1008,7 @@ def _build_child_agent(
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
+    reasoning_effort_override: Optional[str] = None,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -1174,7 +1184,11 @@ def _build_child_agent(
     parent_reasoning = getattr(parent_agent, "reasoning_config", None)
     child_reasoning = parent_reasoning
     try:
-        delegation_effort = str(delegation_cfg.get("reasoning_effort") or "").strip()
+        delegation_effort = str(
+            reasoning_effort_override
+            or delegation_cfg.get("reasoning_effort")
+            or ""
+        ).strip()
         if delegation_effort:
             from hermes_constants import parse_reasoning_effort
 
@@ -2080,8 +2094,10 @@ def delegate_task(
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
+    tier: Optional[str] = None,
     background: Optional[bool] = None,
     parent_agent=None,
+    control_delegation_id: Optional[str] = None,
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks.
@@ -2111,6 +2127,7 @@ def delegate_task(
 
     # Normalise the top-level role once; per-task overrides re-normalise.
     top_role = _normalize_role(role)
+    top_tier = _normalize_tier(tier)
 
     # Background (async) delegation now applies to BOTH single tasks and
     # batches. A batch simply becomes N independent async dispatches: each
@@ -2152,16 +2169,6 @@ def delegate_task(
         )
     effective_max_iter = default_max_iter
 
-    # Resolve delegation credentials (provider:model pair).
-    # When delegation.provider is configured, this resolves the full credential
-    # bundle (base_url, api_key, api_mode) via the same runtime provider system
-    # used by CLI/gateway startup.  When unconfigured, returns None values so
-    # children inherit from the parent.
-    try:
-        creds = _resolve_delegation_credentials(cfg, parent_agent)
-    except ValueError as exc:
-        return tool_error(str(exc))
-
     # Normalize to task list
     max_children = _get_max_concurrent_children()
     recovered_tasks, tasks_error = _recover_tasks_from_json_string(tasks)
@@ -2181,9 +2188,13 @@ def delegate_task(
             )
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
-        task_list = [
-            {"goal": goal, "context": context, "toolsets": toolsets, "role": top_role}
-        ]
+        task_list = [{
+            "goal": goal,
+            "context": context,
+            "toolsets": toolsets,
+            "role": top_role,
+            "tier": top_tier,
+        }]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
 
@@ -2223,6 +2234,18 @@ def delegate_task(
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
+            effective_tier = _normalize_tier(t.get("tier") or top_tier)
+            tier_cfg = dict(cfg)
+            if effective_tier == "important":
+                tier_cfg["model"] = cfg.get("important_model") or cfg.get("model")
+                tier_cfg["provider"] = cfg.get("important_provider") or cfg.get("provider")
+                tier_reasoning = cfg.get("important_reasoning_effort") or cfg.get("reasoning_effort")
+            else:
+                tier_reasoning = cfg.get("reasoning_effort")
+            try:
+                creds = _resolve_delegation_credentials(tier_cfg, parent_agent)
+            except ValueError as exc:
+                return tool_error(str(exc))
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
@@ -2245,6 +2268,7 @@ def delegate_task(
                     else (acp_args if acp_args is not None else creds.get("args"))
                 ),
                 role=effective_role,
+                reasoning_effort_override=tier_reasoning,
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
@@ -2558,6 +2582,15 @@ def delegate_task(
                 except Exception:
                     pass
 
+        def _batch_steer(message: str) -> bool:
+            accepted = False
+            for _c in _child_agents:
+                try:
+                    accepted = bool(_c.steer(message)) or accepted
+                except Exception:
+                    pass
+            return accepted
+
         _goals = [t["goal"] for t in task_list]
         dispatch = dispatch_async_delegation_batch(
             goals=_goals,
@@ -2568,6 +2601,18 @@ def delegate_task(
             session_key=_session_key,
             runner=_batch_runner,
             interrupt_fn=_batch_interrupt,
+            steer_fn=_batch_steer,
+            delegation_id=control_delegation_id,
+            origin_session_id=(
+                getattr(parent_agent, "_codex_control_session_id", None)
+                if isinstance(getattr(parent_agent, "_codex_control_session_id", None), str)
+                else None
+            ),
+            origin_generation=(
+                getattr(parent_agent, "_codex_control_generation", None)
+                if isinstance(getattr(parent_agent, "_codex_control_generation", None), int)
+                else None
+            ),
             max_async_children=_get_max_async_children(),
         )
 
@@ -2935,7 +2980,7 @@ def _build_top_level_description() -> str:
         f"Orchestrators are bounded by max_spawn_depth={max_depth} for this "
         f"user and can be disabled globally via "
         "delegation.orchestrator_enabled=false.\n"
-        "- Subagent model is NOT selectable per call: children inherit the parent model (plus its fallback chain) unless you pin all subagents to a model via delegation.provider / delegation.model in config.yaml.\n"
+        "- Worker tier defaults to 'routine'. Use tier='important' only for substantive research, consequential trading analysis, complex coding, or other high-impact work; it may route to a stronger configured model.\n"
         "- Each subagent gets its own terminal session (separate working directory and state).\n"
         "- Results are always returned as an array, one entry per task."
     )
@@ -3093,6 +3138,11 @@ DELEGATE_TASK_SCHEMA = {
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
                         },
+                        "tier": {
+                            "type": "string",
+                            "enum": ["routine", "important"],
+                            "description": "Per-task worker tier. Routine is the default; important uses the stronger configured model.",
+                        },
                     },
                     "required": ["goal"],
                 },
@@ -3105,6 +3155,15 @@ DELEGATE_TASK_SCHEMA = {
                 "type": "string",
                 "enum": ["leaf", "orchestrator"],
                 "description": "(rebuilt at get_definitions() time)",
+            },
+            "tier": {
+                "type": "string",
+                "enum": ["routine", "important"],
+                "description": (
+                    "Worker tier. Use routine for ordinary delegated work. "
+                    "Use important only for substantive research, consequential "
+                    "trading analysis, complex coding, or high-impact decisions."
+                ),
             },
             "background": {
                 "type": "boolean",
@@ -3179,6 +3238,7 @@ registry.register(
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
         role=args.get("role"),
+        tier=args.get("tier"),
         background=_model_background_value(args, kw.get("parent_agent")),
         parent_agent=kw.get("parent_agent"),
     ),
