@@ -63,6 +63,7 @@ def test_spawn_is_detached_idempotent_and_routine_by_default(service, monkeypatc
     assert calls[0]["background"] is True
     assert calls[0]["tier"] == "routine"
     assert calls[0]["worker_runtime"] == "codex"
+    assert calls[0]["control_session_key"] == "telegram:group:topic"
     assert calls[0]["parent_agent"] is parent
 
     with pytest.raises(IdempotencyConflict):

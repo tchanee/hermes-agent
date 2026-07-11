@@ -2392,6 +2392,7 @@ def delegate_task(
     control_delegation_id: Optional[str] = None,
     toolsets: Optional[List[str]] = None,
     worker_runtime: Optional[str] = None,
+    control_session_key: Optional[str] = None,
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks.
@@ -2862,6 +2863,8 @@ def delegate_task(
             return json.dumps(_sync_result, ensure_ascii=False)
 
         _session_key = get_current_session_key(default="")
+        if control_session_key:
+            _session_key = control_session_key
         _origin_ui_session_id = ""
         try:
             from gateway.session_context import get_session_env

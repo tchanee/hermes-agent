@@ -210,6 +210,7 @@ class CodexDelegationService:
             goal=goal, context=context, toolsets=toolsets or None, role=role,
             tier=governed_importance, background=True, parent_agent=parent,
             control_delegation_id=delegation_id, worker_runtime=worker_runtime,
+            control_session_key=principal["session_key"],
         )
         dispatch = json.loads(raw)
         if dispatch.get("status") != "dispatched":
