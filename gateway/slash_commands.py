@@ -1768,14 +1768,20 @@ class GatewaySlashCommandsMixin:
             configured.pop("api_mode", None)
             result_label = "configured default"
 
+        rollback_transition_id = None
         if action in {"hermes", "restore"} and effective == "codex_app_server":
             control = getattr(self, "_codex_control_runtime", None)
             if control is not None:
                 entry = self.session_store.get_or_create_session(source)
                 try:
-                    control.prepare_runtime_rollback(
-                        session_key=session_key, session_id=entry.session_id
+                    rollback = control.prepare_runtime_rollback(
+                        session_key=session_key, session_id=entry.session_id,
+                        desired_api_mode=(
+                            "codex_responses" if action == "hermes" else None
+                        ),
                     )
+                    if rollback is not None:
+                        rollback_transition_id = rollback["transition_id"]
                 except Exception as exc:
                     return f"Cannot switch runtime: continuity handoff failed: {exc}"
 
@@ -1805,6 +1811,8 @@ class GatewaySlashCommandsMixin:
                 latest_configured["api_mode"] = configured["api_mode"]
             latest_overrides[session_key] = latest_configured
             atomic_yaml_write(_hermes_home / "config.yaml", latest)
+        if rollback_transition_id is not None:
+            control.complete_runtime_rollback(rollback_transition_id)
         in_memory = dict(self._session_model_overrides.get(session_key) or {})
         if action == "restore":
             in_memory.pop("api_mode", None)

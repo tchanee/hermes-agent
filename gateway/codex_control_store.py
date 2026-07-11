@@ -96,6 +96,70 @@ class CodexControlStore:
         finally:
             conn.close()
 
+    def begin_runtime_rollback(
+        self, *, session_key: str, session_id: str, generation: int,
+        desired_api_mode: Optional[str],
+    ) -> dict[str, Any]:
+        transition_id = request_hash({
+            "kind": "rollback", "session_key": session_key,
+            "session_id": session_id, "generation": generation,
+        })
+        now = time.time()
+        with self.transaction() as conn:
+            conn.execute(
+                """INSERT INTO runtime_transitions
+                (transition_id,session_key,session_id,generation,kind,
+                 desired_api_mode,state,created_at,updated_at)
+                VALUES (?,?,?,?,?,?,'preparing',?,?)
+                ON CONFLICT(session_key,session_id,generation,kind) DO UPDATE SET
+                desired_api_mode=excluded.desired_api_mode,handoff_revision=NULL,
+                state='preparing',updated_at=excluded.updated_at
+                WHERE runtime_transitions.state='aborted'""",
+                (transition_id, session_key, session_id, generation, "rollback",
+                 desired_api_mode, now, now),
+            )
+            return dict(conn.execute(
+                "SELECT * FROM runtime_transitions WHERE transition_id=?",
+                (transition_id,),
+            ).fetchone())
+
+    def set_runtime_transition_state(
+        self, transition_id: str, *, state: str,
+        handoff_revision: Optional[str] = None,
+    ) -> dict[str, Any]:
+        if state not in {"prepared", "applied", "aborted"}:
+            raise ValueError("invalid runtime transition state")
+        with self.transaction() as conn:
+            row = conn.execute(
+                "SELECT * FROM runtime_transitions WHERE transition_id=?",
+                (transition_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(transition_id)
+            if row["state"] in {"applied", "aborted"}:
+                return dict(row)
+            conn.execute(
+                """UPDATE runtime_transitions SET state=?,
+                handoff_revision=COALESCE(?,handoff_revision),updated_at=?
+                WHERE transition_id=?""",
+                (state, handoff_revision, time.time(), transition_id),
+            )
+            return dict(conn.execute(
+                "SELECT * FROM runtime_transitions WHERE transition_id=?",
+                (transition_id,),
+            ).fetchone())
+
+    def pending_runtime_rollbacks(self) -> list[dict[str, Any]]:
+        conn = self._connect()
+        try:
+            return [dict(row) for row in conn.execute(
+                """SELECT * FROM runtime_transitions
+                WHERE kind='rollback' AND state IN ('preparing','prepared')
+                ORDER BY created_at"""
+            ).fetchall()]
+        finally:
+            conn.close()
+
     def _init_schema(self) -> None:
         conn = self._connect()
         try:
@@ -141,6 +205,19 @@ class CodexControlStore:
                     created_at REAL NOT NULL,
                     updated_at REAL NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS runtime_transitions (
+                    transition_id TEXT PRIMARY KEY,
+                    session_key TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    generation INTEGER NOT NULL,
+                    kind TEXT NOT NULL CHECK(kind IN ('rollback')),
+                    desired_api_mode TEXT,
+                    handoff_revision TEXT,
+                    state TEXT NOT NULL CHECK(state IN ('preparing','prepared','applied','aborted')),
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL,
+                    UNIQUE(session_key, session_id, generation, kind)
+                );
                 CREATE TABLE IF NOT EXISTS control_audit (
                     id INTEGER PRIMARY KEY,
                     event_type TEXT NOT NULL,
@@ -159,6 +236,7 @@ class CodexControlStore:
                     session_key TEXT NOT NULL,
                     session_id TEXT NOT NULL,
                     generation INTEGER NOT NULL,
+                    foreground_message_id TEXT,
                     audience TEXT NOT NULL,
                     scopes_json TEXT NOT NULL,
                     gateway_pid INTEGER NOT NULL,
@@ -263,6 +341,13 @@ class CodexControlStore:
                 );
                 """
             )
+            capability_columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(control_capabilities)")
+            }
+            if "foreground_message_id" not in capability_columns:
+                conn.execute(
+                    "ALTER TABLE control_capabilities ADD COLUMN foreground_message_id TEXT"
+                )
         finally:
             conn.close()
 
@@ -276,6 +361,7 @@ class CodexControlStore:
         scopes: list[str],
         gateway_pid: int,
         gateway_start: str,
+        foreground_message_id: Optional[str] = None,
         audience: str = "hermes-control",
         ttl_seconds: float = 3600,
     ) -> tuple[str, dict[str, Any]]:
@@ -292,12 +378,12 @@ class CodexControlStore:
             conn.execute(
                 """INSERT INTO control_capabilities
                 (token_id,token_hash,principal_id,profile,session_key,session_id,
-                 generation,audience,scopes_json,gateway_pid,gateway_start,state,
+                 generation,foreground_message_id,audience,scopes_json,gateway_pid,gateway_start,state,
                  expires_at,created_at,updated_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,'active',?,?,?)""",
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'active',?,?,?)""",
                 (
                     token_id, digest, principal_id, profile, session_key,
-                    session_id, generation, audience,
+                    session_id, generation, foreground_message_id, audience,
                     canonical_json(sorted(set(scopes))), gateway_pid,
                     gateway_start, now + ttl_seconds, now, now,
                 ),
@@ -311,6 +397,25 @@ class CodexControlStore:
                 detail={"token_id": token_id, "scopes": sorted(set(scopes))},
             )
         return f"{token_id}.{secret}", dict(row)
+
+    def bind_foreground_message(
+        self, *, session_key: str, session_id: str, generation: int,
+        message_id: Optional[str],
+    ) -> int:
+        normalized = str(message_id or "").strip()
+        if len(normalized) > 128:
+            raise ValueError("foreground message_id exceeds bounded length")
+        bound_message_id = normalized or None
+        with self.transaction() as conn:
+            cursor = conn.execute(
+                """UPDATE control_capabilities
+                SET foreground_message_id=?,updated_at=?
+                WHERE session_key=? AND session_id=? AND generation=? AND state='active'""",
+                (bound_message_id, time.time(), session_key, session_id, generation),
+            )
+            if cursor.rowcount < 1:
+                raise RuntimeError("no active capability for foreground message binding")
+            return cursor.rowcount
 
     def validate_capability(
         self,

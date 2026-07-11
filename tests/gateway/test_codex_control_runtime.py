@@ -134,12 +134,20 @@ def test_runtime_rollback_freezes_dispatch_and_records_audit(runtime):
         session_key="topic", session_id="s1", policy_revision="r1"
     )
     assert first.persist_thread("thread-1")
-    result = runtime.prepare_runtime_rollback(session_key="topic", session_id="s1")
+    result = runtime.prepare_runtime_rollback(
+        session_key="topic", session_id="s1", desired_api_mode="codex_responses"
+    )
     assert result["next_generation"] == 2
     assert ("s1", 1) in runtime.delegations._frozen_generations
     events = [row["event_type"] for row in runtime.store.list_audit(session_id="s1")]
     assert "worker_generation_frozen" in events
     assert "runtime_rollback_prepared" in events
+    pending = runtime.store.pending_runtime_rollbacks()
+    assert pending[0]["transition_id"] == result["transition_id"]
+    assert pending[0]["state"] == "prepared"
+    assert pending[0]["desired_api_mode"] == "codex_responses"
+    runtime.complete_runtime_rollback(result["transition_id"])
+    assert runtime.store.pending_runtime_rollbacks() == []
 
 
 def test_failed_runtime_rollback_unfreezes_dispatch(runtime, monkeypatch):
@@ -152,5 +160,75 @@ def test_failed_runtime_rollback_unfreezes_dispatch(runtime, monkeypatch):
         lambda **kwargs: (_ for _ in ()).throw(RuntimeError("summary failed")),
     )
     with pytest.raises(RuntimeError, match="summary failed"):
-        runtime.prepare_runtime_rollback(session_key="topic", session_id="s1")
+        runtime.prepare_runtime_rollback(
+            session_key="topic", session_id="s1", desired_api_mode=None
+        )
     assert ("s1", 1) not in runtime.delegations._frozen_generations
+    assert runtime.store.pending_runtime_rollbacks() == []
+
+
+def test_failed_runtime_rollback_can_retry_same_generation(runtime, monkeypatch):
+    first = runtime.prepare_session(
+        session_key="topic", session_id="s1", policy_revision="r1"
+    )
+    assert first.persist_thread("thread-1")
+    original_build = runtime.handoffs.build
+    monkeypatch.setattr(
+        runtime.handoffs, "build",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("summary failed")),
+    )
+    with pytest.raises(RuntimeError, match="summary failed"):
+        runtime.prepare_runtime_rollback(
+            session_key="topic", session_id="s1", desired_api_mode=None
+        )
+    monkeypatch.setattr(runtime.handoffs, "build", original_build)
+
+    result = runtime.prepare_runtime_rollback(
+        session_key="topic", session_id="s1", desired_api_mode="codex_responses"
+    )
+
+    pending = runtime.store.pending_runtime_rollbacks()
+    assert len(pending) == 1
+    assert pending[0]["transition_id"] == result["transition_id"]
+    assert pending[0]["state"] == "prepared"
+    assert pending[0]["desired_api_mode"] == "codex_responses"
+
+
+def test_startup_aborts_rollback_intent_if_binding_was_never_fenced(runtime):
+    first = runtime.prepare_session(
+        session_key="topic", session_id="s1", policy_revision="r1"
+    )
+    assert first.persist_thread("thread-1")
+    transition = runtime.store.begin_runtime_rollback(
+        session_key="topic", session_id="s1", generation=1,
+        desired_api_mode="codex_responses",
+    )
+
+    assert runtime.recover_runtime_rollbacks() == []
+    assert runtime.store.pending_runtime_rollbacks() == []
+    assert runtime.store.get_thread_binding("topic")["state"] == "active"
+    assert transition["state"] == "preparing"
+
+
+def test_startup_recovers_rollback_crash_after_fence(runtime):
+    first = runtime.prepare_session(
+        session_key="topic", session_id="s1", policy_revision="r1"
+    )
+    assert first.persist_thread("thread-1")
+    transition = runtime.store.begin_runtime_rollback(
+        session_key="topic", session_id="s1", generation=1,
+        desired_api_mode=None,
+    )
+    runtime.prepare_reseed(
+        session_key="topic", session_id="s1", generation=1,
+        reason="runtime_rollback",
+    )
+
+    recovered = runtime.recover_runtime_rollbacks()
+
+    assert len(recovered) == 1
+    assert recovered[0]["transition_id"] == transition["transition_id"]
+    assert recovered[0]["state"] == "prepared"
+    assert recovered[0]["desired_api_mode"] is None
+    runtime.complete_runtime_rollback(transition["transition_id"])
+    assert runtime.recover_runtime_rollbacks() == []

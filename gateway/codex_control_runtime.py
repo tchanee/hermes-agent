@@ -214,6 +214,15 @@ class CodexControlRuntime:
     def pending_memory(self) -> list[dict[str, Any]]:
         return self.memory.pending()
 
+    def bind_foreground_message(
+        self, *, session_key: str, session_id: str, generation: int,
+        message_id: Optional[str],
+    ) -> int:
+        return self.store.bind_foreground_message(
+            session_key=session_key, session_id=session_id,
+            generation=generation, message_id=message_id,
+        )
+
     def prepare_reseed(
         self, *, session_key: str, session_id: str, generation: int,
         reason: str = "token_threshold",
@@ -240,11 +249,18 @@ class CodexControlRuntime:
         )
         return {"handoff_revision": handoff["revision"], "next_generation": generation + 1}
 
-    def prepare_runtime_rollback(self, *, session_key: str, session_id: str) -> Optional[dict[str, Any]]:
+    def prepare_runtime_rollback(
+        self, *, session_key: str, session_id: str,
+        desired_api_mode: Optional[str],
+    ) -> Optional[dict[str, Any]]:
         binding = self.store.get_thread_binding(session_key)
         if not binding or binding["session_id"] != session_id or binding["state"] != "active":
             return None
         generation = int(binding["generation"])
+        transition = self.store.begin_runtime_rollback(
+            session_key=session_key, session_id=session_id, generation=generation,
+            desired_api_mode=desired_api_mode,
+        )
         self.delegations.freeze_generation(
             session_id, generation, reason="runtime_rollback"
         )
@@ -254,17 +270,51 @@ class CodexControlRuntime:
                 generation=generation, reason="runtime_rollback",
             )
         except Exception:
+            self.store.set_runtime_transition_state(
+                transition["transition_id"], state="aborted"
+            )
             self.delegations.unfreeze_generation(
                 session_id, generation, reason="rollback_handoff_failed"
             )
             raise
+        self.store.set_runtime_transition_state(
+            transition["transition_id"], state="prepared",
+            handoff_revision=result["handoff_revision"],
+        )
         self.store.record_audit(
             event_type="runtime_rollback_prepared", profile=self.profile,
             session_id=session_id, generation=generation,
             detail={"session_key": session_key,
                     "handoff_revision": result["handoff_revision"]},
         )
-        return result
+        return {**result, "transition_id": transition["transition_id"]}
+
+    def recover_runtime_rollbacks(self) -> list[dict[str, Any]]:
+        recoverable = []
+        for transition in self.store.pending_runtime_rollbacks():
+            binding = self.store.get_thread_binding(transition["session_key"])
+            fenced = bool(
+                binding
+                and binding["session_id"] == transition["session_id"]
+                and int(binding["generation"]) == int(transition["generation"])
+                and binding["state"] == "fenced"
+            )
+            if fenced:
+                if transition["state"] == "preparing":
+                    transition = self.store.set_runtime_transition_state(
+                        transition["transition_id"], state="prepared"
+                    )
+                recoverable.append(transition)
+            else:
+                self.store.set_runtime_transition_state(
+                    transition["transition_id"], state="aborted"
+                )
+        return recoverable
+
+    def complete_runtime_rollback(self, transition_id: str) -> dict[str, Any]:
+        return self.store.set_runtime_transition_state(
+            transition_id, state="applied"
+        )
 
     def close(self) -> None:
         self.delegations.close()

@@ -48,8 +48,20 @@ class CodexMemoryService:
             raise ValueError(f"source_refs must be a list of at most {MAX_SOURCE_REFS} items")
         if any(not isinstance(ref, dict) for ref in source_refs):
             raise ValueError("each source reference must be an object")
-        if not source_refs or any(not str(ref.get("message_id") or "").strip() for ref in source_refs):
-            raise ValueError("foreground_user proposals require source_refs with message_id")
+        foreground_message_id = str(
+            principal.get("foreground_message_id") or ""
+        ).strip()
+        if not foreground_message_id:
+            raise ValueError("foreground message provenance is unavailable")
+        if source_refs:
+            cited_message_ids = {
+                str(ref.get("message_id") or "").strip() for ref in source_refs
+            }
+            if cited_message_ids != {foreground_message_id}:
+                raise ValueError(
+                    "source_refs must cite the gateway-bound foreground message_id exactly"
+                )
+        source_refs = [{"message_id": foreground_message_id}]
 
         self.memory_store.load_from_disk()
         expected_revision = self.memory_store.revision(target)

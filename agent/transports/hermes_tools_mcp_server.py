@@ -240,16 +240,13 @@ def _build_server() -> Any:
             target: str,
             rationale: str,
             idempotency_key: str,
-            source_kind: str = "foreground_user",
-            source_refs: Optional[list[dict[str, Any]]] = None,
         ) -> str:
             return json.dumps(control_client.call("memory.propose", {
                 "operations": operations,
                 "target": target,
                 "rationale": rationale,
                 "idempotency_key": idempotency_key,
-                "source_kind": source_kind,
-                "source_refs": source_refs or [],
+                "source_kind": "foreground_user",
             }), ensure_ascii=False)
 
         def hermes_memory_search(
@@ -342,7 +339,9 @@ def _build_server() -> Any:
             name="hermes_memory_propose",
             description=(
                 "Stage a bounded USER.md or MEMORY.md change for explicit user approval. "
-                "This never writes memory directly; cite whether facts came from the user, history, workers, tools, or web."
+                "This never writes memory directly. Foreground Telegram provenance is "
+                "bound and attached by the gateway; retrieved or delegated material must "
+                "first be restated by the user in the current turn."
             ),
         )(hermes_memory_propose)
         mcp.tool(

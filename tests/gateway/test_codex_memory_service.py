@@ -20,6 +20,7 @@ def principal():
         "profile": "orchestrator",
         "session_id": "s1",
         "generation": 1,
+        "foreground_message_id": "42",
     }
 
 
@@ -103,5 +104,30 @@ def test_non_foreground_material_cannot_be_promoted_directly(service, source_kin
 
 def test_foreground_proposal_requires_message_provenance(service):
     memory, _store = service
-    with pytest.raises(ValueError, match="source_refs with message_id"):
-        memory.propose(proposal_params(source_refs=[]), principal())
+    proposed = memory.propose(proposal_params(source_refs=[]), principal())
+    row = _store.get_memory_proposal(proposed["proposal_id"])
+    assert json.loads(row["source_refs_json"]) == [{"message_id": "42"}]
+
+
+def test_foreground_proposal_requires_exact_gateway_bound_message(service):
+    memory, _store = service
+    with pytest.raises(ValueError, match="gateway-bound"):
+        memory.propose(
+            proposal_params(source_refs=[{"message_id": "current"}]), principal()
+        )
+    missing = principal()
+    missing["foreground_message_id"] = None
+    with pytest.raises(ValueError, match="unavailable"):
+        memory.propose(proposal_params(), missing)
+
+
+def test_foreground_source_refs_discard_model_authored_extra_fields(service):
+    memory, store = service
+    proposed = memory.propose(
+        proposal_params(source_refs=[{
+            "message_id": "42", "evidence": "model-authored paraphrase"
+        }]),
+        principal(),
+    )
+    row = store.get_memory_proposal(proposed["proposal_id"])
+    assert json.loads(row["source_refs_json"]) == [{"message_id": "42"}]

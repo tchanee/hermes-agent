@@ -134,3 +134,39 @@ async def test_topic_runtime_status_prefers_control_plane_binding(monkeypatch):
 
     assert "Codex thread: resumable (control-)" in reply
     assert "legacy-wrong-thread" not in reply
+
+
+def test_startup_reconciles_prepared_runtime_rollback(tmp_path, monkeypatch):
+    session_key = "agent:main:telegram:group:-1003931971445:7351"
+    config = {"gateway": {"session_model_overrides": {
+        session_key: {"model": "gpt-5.6-terra", "api_mode": "codex_app_server"}
+    }}}
+    (tmp_path / "config.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_config",
+        lambda: yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8")),
+    )
+
+    class FakeControl:
+        completed = []
+
+        def recover_runtime_rollbacks(self):
+            return [{
+                "transition_id": "rollback-1",
+                "session_key": session_key,
+                "desired_api_mode": "codex_responses",
+            }]
+
+        def complete_runtime_rollback(self, transition_id):
+            self.completed.append(transition_id)
+
+    control = FakeControl()
+
+    assert gateway_run._recover_codex_runtime_rollbacks(control) == 1
+    saved = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+    assert saved["gateway"]["session_model_overrides"][session_key] == {
+        "model": "gpt-5.6-terra", "api_mode": "codex_responses"
+    }
+    assert control.completed == ["rollback-1"]

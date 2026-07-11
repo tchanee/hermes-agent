@@ -1723,6 +1723,40 @@ logger = logging.getLogger(__name__)
 _AGENT_PENDING_SENTINEL = object()
 
 
+def _recover_codex_runtime_rollbacks(control_runtime) -> int:
+    """Finish durable per-topic rollback transitions after gateway restart."""
+    recovered = 0
+    for transition in control_runtime.recover_runtime_rollbacks():
+        config = _load_gateway_config()
+        gateway_cfg = config.get("gateway")
+        if gateway_cfg is None:
+            gateway_cfg = {}
+            config["gateway"] = gateway_cfg
+        if not isinstance(gateway_cfg, dict):
+            raise RuntimeError("cannot recover runtime rollback: gateway config is malformed")
+        overrides = gateway_cfg.get("session_model_overrides")
+        if overrides is None:
+            overrides = {}
+            gateway_cfg["session_model_overrides"] = overrides
+        if not isinstance(overrides, dict):
+            raise RuntimeError(
+                "cannot recover runtime rollback: session overrides are malformed"
+            )
+        session_key = transition["session_key"]
+        override = dict(overrides.get(session_key) or {})
+        desired_mode = transition.get("desired_api_mode")
+        if desired_mode:
+            override["api_mode"] = desired_mode
+        else:
+            override.pop("api_mode", None)
+        overrides[session_key] = override
+        atomic_yaml_write(_hermes_home / "config.yaml", config)
+        control_runtime.complete_runtime_rollback(transition["transition_id"])
+        logger.warning("Recovered prepared Codex runtime rollback for %s", session_key)
+        recovered += 1
+    return recovered
+
+
 def _resolve_runtime_agent_kwargs() -> dict:
     """Resolve provider credentials for gateway-created AIAgent instances.
 
@@ -2724,6 +2758,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         get_process_start_time(os.getpid()) or "unknown"
                     ),
                 )
+                _recover_codex_runtime_rollbacks(self._codex_control_runtime)
         except Exception:
             logger.exception("Codex control-plane initialization failed")
             raise
@@ -9690,6 +9725,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 session_key=session_key,
                 run_generation=run_generation,
                 event_message_id=self._reply_anchor_for_event(event),
+                foreground_message_id=(
+                    str(event.message_id) if event.message_id else None
+                ),
                 channel_prompt=event.channel_prompt,
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
@@ -14546,6 +14584,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         run_generation: Optional[int] = None,
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
+        foreground_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
         persist_user_message: Optional[str] = None,
         persist_user_timestamp: Optional[float] = None,
@@ -14564,6 +14603,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 message, context_prompt, history, source, session_id,
                 session_key=session_key, run_generation=run_generation,
                 _interrupt_depth=_interrupt_depth, event_message_id=event_message_id,
+                foreground_message_id=foreground_message_id,
                 channel_prompt=channel_prompt, persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
             )
@@ -14574,6 +14614,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 message, context_prompt, history, source, session_id,
                 session_key=session_key, run_generation=run_generation,
                 _interrupt_depth=_interrupt_depth, event_message_id=event_message_id,
+                foreground_message_id=foreground_message_id,
                 channel_prompt=channel_prompt, persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
             )
@@ -14604,6 +14645,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         run_generation: Optional[int] = None,
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
+        foreground_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
         persist_user_message: Optional[str] = None,
         persist_user_timestamp: Optional[float] = None,
@@ -15793,6 +15835,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _cache[session_key] = (agent, _sig, _current_msg_count)
                         self._enforce_agent_cache_cap()
                 logger.debug("Created new agent for session %s (sig=%s)", session_key, _sig)
+
+            if (
+                getattr(self, "_codex_control_runtime", None) is not None
+                and hasattr(agent, "_codex_control_generation")
+            ):
+                self._codex_control_runtime.bind_foreground_message(
+                    session_key=session_key,
+                    session_id=session_id,
+                    generation=int(agent._codex_control_generation),
+                    message_id=foreground_message_id,
+                )
 
             # Per-message state — callbacks and reasoning config change every
             # turn and must not be baked into the cached agent constructor.
@@ -17202,6 +17255,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     run_generation=run_generation,
                     _interrupt_depth=_interrupt_depth + 1,
                     event_message_id=next_message_id,
+                    foreground_message_id=(
+                        str(pending_event.message_id)
+                        if pending_event is not None and pending_event.message_id
+                        else None
+                    ),
                     channel_prompt=next_channel_prompt,
                 )
                 # This queued event bypasses _handle_message_with_agent's

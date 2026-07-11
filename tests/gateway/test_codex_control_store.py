@@ -121,6 +121,22 @@ def test_capability_is_scoped_bound_and_revocable(tmp_path):
         expected_generation=3,
     )
     assert valid["principal_id"] == row["principal_id"]
+    assert valid["foreground_message_id"] is None
+    assert store.bind_foreground_message(
+        session_key="topic", session_id="s", generation=3, message_id="99"
+    ) == 1
+    rebound = store.validate_capability(
+        token, audience="hermes-control", required_scope="context.read",
+        gateway_pid=42, gateway_start="start",
+    )
+    assert rebound["foreground_message_id"] == "99"
+    store.bind_foreground_message(
+        session_key="topic", session_id="s", generation=3, message_id=None
+    )
+    assert store.validate_capability(
+        token, audience="hermes-control", required_scope="context.read",
+        gateway_pid=42, gateway_start="start",
+    )["foreground_message_id"] is None
     for overrides in (
         {"required_scope": "memory.write"},
         {"gateway_pid": 43},
