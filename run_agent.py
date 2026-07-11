@@ -1485,13 +1485,16 @@ class AIAgent:
         that synthetic text leak into persisted transcripts or resumed session
         history. When an override is configured for the active turn, mutate the
         in-memory messages list in place so both persistence and returned
-        history stay clean.  A paired timestamp override preserves the platform
-        event time as message metadata, rather than embedding it in content.
+        history stay clean. Paired timestamp and platform-message-ID overrides
+        preserve event metadata without embedding it in content.
         """
         idx = getattr(self, "_persist_user_message_idx", None)
         override = getattr(self, "_persist_user_message_override", None)
         timestamp = getattr(self, "_persist_user_message_timestamp", None)
-        if idx is None or (override is None and timestamp is None):
+        message_id = getattr(self, "_persist_user_message_id", None)
+        if idx is None or (
+            override is None and timestamp is None and message_id is None
+        ):
             return
         if 0 <= idx < len(messages):
             msg = messages[idx]
@@ -1508,6 +1511,8 @@ class AIAgent:
                     msg["content"] = override
                 if timestamp is not None:
                     msg["timestamp"] = timestamp
+                if message_id is not None:
+                    msg["platform_message_id"] = message_id
 
     def _persist_session(self, messages: List[Dict], conversation_history: List[Dict] = None):
         """Save session state to both JSON log and SQLite on any exit path.
@@ -5345,6 +5350,7 @@ class AIAgent:
         stream_callback: Optional[callable] = None,
         persist_user_message: Optional[str] = None,
         persist_user_timestamp: Optional[float] = None,
+        persist_user_message_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
         from agent.conversation_loop import run_conversation
@@ -5357,6 +5363,7 @@ class AIAgent:
             stream_callback,
             persist_user_message,
             persist_user_timestamp,
+            persist_user_message_id,
         )
 
     def chat(self, message: str, stream_callback: Optional[callable] = None) -> str:

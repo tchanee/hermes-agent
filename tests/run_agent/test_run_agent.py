@@ -103,6 +103,20 @@ def test_persist_user_message_override_preserves_multimodal_turns(agent):
     assert messages == [{"role": "user", "content": multimodal_content}]
 
 
+def test_persist_user_message_id_is_metadata_not_content(agent):
+    messages = [{"role": "user", "content": "hello"}]
+    agent._persist_user_message_idx = 0
+    agent._persist_user_message_override = None
+    agent._persist_user_message_timestamp = None
+    agent._persist_user_message_id = "7462"
+
+    agent._apply_persist_user_message_override(messages)
+
+    assert messages == [{
+        "role": "user", "content": "hello", "platform_message_id": "7462"
+    }]
+
+
 @pytest.fixture()
 def agent_with_memory_tool():
     """Agent whose valid_tool_names includes 'memory'."""
