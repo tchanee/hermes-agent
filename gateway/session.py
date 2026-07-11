@@ -1182,15 +1182,24 @@ class SessionStore:
                     # save otherwise leaves Telegram with no resumable mapping, so
                     # queued/resume-pending work disappears until the user sends a
                     # fresh message.
-                    if recovered_entry is not None and recovered_entry.session_id != entry.session_id:
-                        logger.warning(
-                            "gateway.session: repointing stale sessions.json entry "
-                            "%r from ended %s (end_reason=%r) to recovered %s",
-                            key,
-                            entry.session_id,
-                            row["end_reason"],
-                            recovered_entry.session_id,
-                        )
+                    if recovered_entry is not None:
+                        if recovered_entry.session_id != entry.session_id:
+                            logger.warning(
+                                "gateway.session: repointing stale sessions.json entry "
+                                "%r from ended %s (end_reason=%r) to recovered %s",
+                                key,
+                                entry.session_id,
+                                row["end_reason"],
+                                recovered_entry.session_id,
+                            )
+                        else:
+                            logger.info(
+                                "gateway.session: preserving recovered sessions.json "
+                                "entry %r -> %s after reopening end_reason=%r",
+                                key,
+                                entry.session_id,
+                                row["end_reason"],
+                            )
                         self._entries[key] = recovered_entry
                         recovered_keys += 1
                         continue

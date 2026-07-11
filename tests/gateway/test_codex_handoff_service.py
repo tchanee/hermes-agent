@@ -7,9 +7,20 @@ from gateway.codex_handoff_service import CodexHandoffService, MAX_HANDOFF_BYTES
 
 
 class FakeDB:
+    def get_session(self, session_id):
+        return {
+            "s1": {"id": "s1", "parent_session_id": "s0"},
+            "s0": {"id": "s0", "parent_session_id": None},
+        }.get(session_id)
+
     def get_messages(self, session_id, include_inactive=False):
-        assert session_id == "s1"
         assert include_inactive is True
+        if session_id == "s0":
+            return [
+                {"id": 10, "role": "user", "content": "Continue lane research."},
+                {"id": 11, "role": "assistant", "content": "Two lanes plus control."},
+            ]
+        assert session_id == "s1"
         return [
             {"id": 1, "role": "user", "content": "Keep the parent chat responsive."},
             {"id": 2, "role": "assistant", "content": "Worker dispatched."},
@@ -31,6 +42,10 @@ def test_handoff_is_bounded_redacted_tainted_and_revisioned(service):
     assert payload["instructions"] is None
     assert "abcdefghijklmnop" not in row["payload_json"]
     assert payload["recent_user_requests"][-1]["provenance"] == "hermes_transcript"
+    assert payload["prior_topic_context"][0]["session_id"] == "s0"
+    assert payload["prior_topic_context"][0]["recent_assistant_updates"][0][
+        "provenance"
+    ] == "hermes_topic_predecessor_transcript"
     assert len(row["payload_json"].encode()) <= MAX_HANDOFF_BYTES
     loaded = handoffs.get(session_key="topic", session_id="s1")
     assert loaded["revision"] == row["revision"]

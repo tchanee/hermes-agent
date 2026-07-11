@@ -137,7 +137,7 @@ class TestPruneStaleSessionsLocked:
         db.find_latest_gateway_session_for_peer.assert_called_once()
         db.reopen_session.assert_called_once_with("sid_child")
 
-    def test_prunes_stale_entry_when_recovery_only_finds_same_ended_session(self, tmp_path):
+    def test_keeps_stale_entry_when_recovery_reopens_same_session(self, tmp_path):
         key = "agent:main:telegram:dm:5140768830"
         db = _db_returning({"sid_parent": {"end_reason": "agent_close", "id": "sid_parent"}})
         db.find_latest_gateway_session_for_peer.return_value = {
@@ -149,7 +149,9 @@ class TestPruneStaleSessionsLocked:
 
         store._prune_stale_sessions_locked()
 
-        assert key not in store._entries
+        assert key in store._entries
+        assert store._entries[key].session_id == "sid_parent"
+        db.reopen_session.assert_called_once_with("sid_parent")
 
     def test_noop_when_db_is_none(self, tmp_path):
         config = GatewayConfig(default_reset_policy=SessionResetPolicy(mode="none"))
