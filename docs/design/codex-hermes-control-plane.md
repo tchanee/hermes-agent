@@ -1,6 +1,8 @@
 # Codex Runtime With Hermes Control Plane
 
-Status: revision 2 after independent review; implementation remains disabled
+Status: revision 3; topic 7351 pilot active after implementation review and
+live scoped Codex-to-gateway RPC verification. Broader rollout remains gated
+on real Telegram worker, restart/resume, compaction, and rollback exercises.
 
 ## Objective
 

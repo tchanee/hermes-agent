@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import sys
+import tomllib
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,6 +19,36 @@ class ScopedCodexHome:
 
     def cleanup(self) -> None:
         shutil.rmtree(self.root, ignore_errors=True)
+
+
+def validate_scoped_codex_home(home: Path) -> None:
+    """Fail closed if a generated control home gains ambient capabilities."""
+    root = Path(home)
+    config_path = root / "config.toml"
+    config = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    allowed_top = {
+        "default_permissions", "approval_policy", "sandbox_mode",
+        "mcp_servers", "projects",
+    }
+    unexpected = set(config) - allowed_top
+    if unexpected:
+        raise RuntimeError(f"unexpected scoped Codex config keys: {sorted(unexpected)}")
+    servers = config.get("mcp_servers")
+    if not isinstance(servers, dict) or set(servers) != {"hermes-control"}:
+        raise RuntimeError("scoped Codex home must expose only hermes-control MCP")
+    server = servers["hermes-control"]
+    allowed_server = {
+        "command", "args", "default_tools_approval_mode", "env",
+        "startup_timeout_sec", "tool_timeout_sec",
+    }
+    if not isinstance(server, dict) or set(server) - allowed_server:
+        raise RuntimeError("unexpected scoped Hermes MCP configuration")
+    if server.get("default_tools_approval_mode") != "approve":
+        raise RuntimeError("scoped Hermes MCP must be pre-approved")
+    if config.get("approval_policy") != "never" or config.get("sandbox_mode") != "workspace-write":
+        raise RuntimeError("scoped Codex approval/sandbox policy is not fail-closed")
+    if config_path.stat().st_mode & 0o077:
+        raise PermissionError("scoped Codex config must be private")
 
 
 def _toml_string(value: str) -> str:
@@ -73,4 +104,5 @@ tool_timeout_sec = 600.0
 '''
     (root / "config.toml").write_text(config, encoding="utf-8")
     os.chmod(root / "config.toml", 0o600)
+    validate_scoped_codex_home(root)
     return ScopedCodexHome(root=root, token_file=token_file)

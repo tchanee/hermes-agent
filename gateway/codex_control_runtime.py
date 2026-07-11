@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from agent.codex_scoped_home import ScopedCodexHome, create_scoped_codex_home
+from agent.transports.codex_app_server import check_codex_binary
 from gateway.codex_context_service import CodexContextService
 from gateway.codex_delegation_service import CodexDelegationService
 from gateway.codex_handoff_service import CodexHandoffService
@@ -29,6 +30,8 @@ class PreparedCodexControlSession:
 
 
 class CodexControlRuntime:
+    MIN_CONTROL_CODEX_VERSION = (0, 144, 1)
+
     def __init__(
         self,
         *,
@@ -38,7 +41,14 @@ class CodexControlRuntime:
         gateway_pid: int,
         gateway_start: str,
         source_codex_home: Optional[Path] = None,
+        codex_binary_check: Callable[..., tuple[bool, str]] = check_codex_binary,
     ) -> None:
+        codex_ok, codex_version = codex_binary_check(
+            os.environ.get("CODEX_BIN", "codex"),
+            min_version=self.MIN_CONTROL_CODEX_VERSION,
+        )
+        if not codex_ok:
+            raise RuntimeError(f"Codex control plane unavailable: {codex_version}")
         self.hermes_home = Path(hermes_home)
         self.profile = profile
         self.gateway_pid = gateway_pid

@@ -3,7 +3,7 @@ import tomllib
 
 import pytest
 
-from agent.codex_scoped_home import create_scoped_codex_home
+from agent.codex_scoped_home import create_scoped_codex_home, validate_scoped_codex_home
 
 
 def test_scoped_home_contains_only_control_mcp_and_private_auth(tmp_path):
@@ -41,3 +41,19 @@ def test_scoped_home_fails_closed_without_auth(tmp_path):
             socket_path=tmp_path / "s", token="x.y",
             hermes_home=tmp_path / "hermes",
         )
+
+
+def test_scoped_home_validator_rejects_added_server(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir(mode=0o700)
+    config = home / "config.toml"
+    config.write_text(
+        'approval_policy="never"\nsandbox_mode="workspace-write"\n'
+        '[mcp_servers.hermes-control]\ncommand="python"\nargs=[]\n'
+        'default_tools_approval_mode="approve"\nenv={}\n'
+        '[mcp_servers.ambient]\ncommand="unsafe"\n',
+        encoding="utf-8",
+    )
+    config.chmod(0o600)
+    with pytest.raises(RuntimeError, match="only hermes-control"):
+        validate_scoped_codex_home(home)

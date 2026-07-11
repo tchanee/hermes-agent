@@ -26,11 +26,23 @@ def runtime(tmp_path, monkeypatch):
     rt = CodexControlRuntime(
         hermes_home=short, session_db=FakeDB(), profile="orchestrator",
         gateway_pid=99, gateway_start="start", source_codex_home=source,
+        codex_binary_check=lambda *_args, **_kwargs: (True, "0.144.1"),
     )
     yield rt
     rt.close()
     import shutil
     shutil.rmtree(short, ignore_errors=True)
+
+
+def test_old_codex_version_fails_before_runtime_start(tmp_path):
+    with pytest.raises(RuntimeError, match="older than required"):
+        CodexControlRuntime(
+            hermes_home=tmp_path, session_db=FakeDB(), profile="orchestrator",
+            gateway_pid=99, gateway_start="start",
+            codex_binary_check=lambda *_args, **_kwargs: (
+                False, "codex 0.143.0 is older than required 0.144.1"
+            ),
+        )
 
 
 def test_first_session_starts_fresh_and_binds_once(runtime):
