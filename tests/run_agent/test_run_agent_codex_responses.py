@@ -1154,6 +1154,32 @@ def test_chat_messages_to_responses_input_uses_call_id_for_function_call(monkeyp
     assert function_output["call_id"] == "call_abc123"
 
 
+def test_chat_messages_to_responses_input_bounds_legacy_projected_call_ids(monkeypatch):
+    _build_agent(monkeypatch)
+    from agent.codex_responses_adapter import _chat_messages_to_responses_input
+
+    legacy_id = "codex_mcp_hermes-control_hermes_context_bootstrap_" + "x" * 40
+    items = _chat_messages_to_responses_input(
+        [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{
+                    "id": legacy_id,
+                    "type": "function",
+                    "function": {"name": "bootstrap", "arguments": "{}"},
+                }],
+            },
+            {"role": "tool", "tool_call_id": legacy_id, "content": "ok"},
+        ]
+    )
+
+    function_call = next(item for item in items if item.get("type") == "function_call")
+    function_output = next(item for item in items if item.get("type") == "function_call_output")
+    assert function_call["call_id"] == function_output["call_id"]
+    assert len(function_call["call_id"]) <= 64
+
+
 def test_chat_messages_to_responses_input_accepts_call_pipe_fc_ids(monkeypatch):
     agent = _build_agent(monkeypatch)
     from agent.codex_responses_adapter import _chat_messages_to_responses_input

@@ -258,6 +258,11 @@ class TestHelpers:
         assert _deterministic_call_id("exec", "abc") == _deterministic_call_id("exec", "abc")
         assert _deterministic_call_id("exec", "abc") != _deterministic_call_id("exec", "xyz")
 
+    def test_deterministic_call_id_fits_responses_limit(self) -> None:
+        call_id = _deterministic_call_id("mcp_very-long-server_very-long-tool", "x" * 100)
+        assert call_id.startswith("call_codex_")
+        assert len(call_id) <= 64
+
     def test_deterministic_call_id_handles_missing_id(self) -> None:
         # Should not raise, should be stable for same item type
         a = _deterministic_call_id("exec", "")

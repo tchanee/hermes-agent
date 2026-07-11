@@ -191,6 +191,15 @@ def _deterministic_call_id(fn_name: str, arguments: str, index: int = 0) -> str:
     return f"call_{digest}"
 
 
+def _bounded_responses_call_id(raw_id: str) -> str:
+    """Return a stable Responses-compatible call_id (maximum 64 chars)."""
+    value = str(raw_id or "").strip()
+    if len(value) <= 64:
+        return value
+    digest = hashlib.sha256(value.encode("utf-8", errors="replace")).hexdigest()[:40]
+    return f"call_legacy_{digest}"
+
+
 def _split_responses_tool_id(raw_id: Any) -> tuple[Optional[str], Optional[str]]:
     """Split a stored tool id into (call_id, response_item_id)."""
     if not isinstance(raw_id, str):
@@ -511,7 +520,7 @@ def _chat_messages_to_responses_input(
                             else:
                                 _raw_args = str(fn.get("arguments", "{}"))
                                 call_id = _deterministic_call_id(fn_name, _raw_args, len(items))
-                        call_id = call_id.strip()
+                        call_id = _bounded_responses_call_id(call_id)
 
                         arguments = fn.get("arguments", "{}")
                         if isinstance(arguments, dict):
@@ -565,7 +574,7 @@ def _chat_messages_to_responses_input(
 
             items.append({
                 "type": "function_call_output",
-                "call_id": call_id,
+                "call_id": _bounded_responses_call_id(call_id),
                 "output": output_value,
             })
 
@@ -605,7 +614,7 @@ def _preflight_codex_input_items(raw_items: Any) -> List[Dict[str, Any]]:
             normalized.append(
                 {
                     "type": "function_call",
-                    "call_id": call_id.strip(),
+                    "call_id": _bounded_responses_call_id(call_id),
                     "name": name.strip(),
                     "arguments": arguments,
                 }
@@ -646,7 +655,7 @@ def _preflight_codex_input_items(raw_items: Any) -> List[Dict[str, Any]]:
                 normalized.append(
                     {
                         "type": "function_call_output",
-                        "call_id": call_id.strip(),
+                        "call_id": _bounded_responses_call_id(call_id),
                         "output": cleaned if cleaned else "",
                     }
                 )
@@ -657,7 +666,7 @@ def _preflight_codex_input_items(raw_items: Any) -> List[Dict[str, Any]]:
             normalized.append(
                 {
                     "type": "function_call_output",
-                    "call_id": call_id.strip(),
+                    "call_id": _bounded_responses_call_id(call_id),
                     "output": output,
                 }
             )

@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -41,10 +42,13 @@ def _deterministic_call_id(item_type: str, item_id: str) -> str:
     to a content hash so replay produces the same id across sessions and
     prefix caches stay valid. See AGENTS.md Pitfall #16 (deterministic IDs in
     tool call history)."""
-    if item_id:
-        return f"codex_{item_type}_{item_id}"
-    digest = hashlib.sha256(f"{item_type}".encode()).hexdigest()[:16]
-    return f"codex_{item_type}_{digest}"
+    source = f"{item_type}:{item_id}"
+    digest = hashlib.sha256(source.encode()).hexdigest()[:40]
+    kind = re.sub(r"[^A-Za-z0-9_-]", "", item_type)[:12] or "item"
+    # Responses call_id is limited to 64 characters. A fixed prefix plus a
+    # content digest is stable across replay and independent of MCP tool-name
+    # length.
+    return f"call_codex_{kind}_{digest}"
 
 
 def _format_tool_args(d: dict) -> str:
