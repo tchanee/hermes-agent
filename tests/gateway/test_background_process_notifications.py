@@ -281,6 +281,31 @@ async def test_inject_watch_notification_routes_from_session_store_origin(monkey
     assert synth_event.source.thread_id == "42"
     assert synth_event.source.user_id == "123"
     assert synth_event.source.user_name == "Emiliyan"
+    assert not hasattr(synth_event, "_async_delegation_delivery")
+
+
+@pytest.mark.asyncio
+async def test_inject_watch_notification_carries_real_async_ledger_delivery(
+    monkeypatch, tmp_path
+):
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+    evt = {
+        "session_key": "agent:main:telegram:group:-100:42",
+        "platform": "telegram",
+        "chat_id": "-100",
+        "chat_type": "group",
+        "thread_id": "42",
+        "delegation_id": "deleg_1",
+        "_async_ledger_path": "/tmp/delegations.json",
+    }
+
+    await runner._inject_watch_notification("completion", evt)
+
+    synth_event = adapter.handle_message.await_args.args[0]
+    assert synth_event._async_delegation_delivery == (
+        "deleg_1", "/tmp/delegations.json"
+    )
 
 
 @pytest.mark.asyncio

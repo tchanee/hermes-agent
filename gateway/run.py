@@ -13248,10 +13248,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     or f"control:delegation:{evt.get('delegation_id', 'unknown')}"
                 ),
             )
-            synth_event._async_delegation_delivery = (
-                evt.get("delegation_id", ""),
-                evt.get("_async_ledger_path"),
-            )
+            _ledger_path = evt.get("_async_ledger_path")
+            if _ledger_path:
+                synth_event._async_delegation_delivery = (
+                    evt.get("delegation_id", ""),
+                    _ledger_path,
+                )
             synth_event._control_event_id = evt.get("control_event_id")
             logger.info(
                 "Watch pattern notification — injecting for %s chat=%s thread=%s",
