@@ -18394,6 +18394,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     pass
 
             _xproc_evicted_agent = None
+            _cache_entry_evicted_for_reseed = False
             if _cache_lock and _cache is not None:
                 with _cache_lock:
                     cached = _cache.get(session_key)
@@ -18413,6 +18414,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 if _ev_agent and _ev_agent is not _AGENT_PENDING_SENTINEL:
                                     self._cleanup_agent_resources(_ev_agent)
                                 cached = None
+                                _cache_entry_evicted_for_reseed = True
                                 logger.info("Prepared verified Codex reseed for %s", session_key)
                             except Exception as exc:
                                 # Keep using the old native thread if continuity cannot be verified.
@@ -18423,8 +18425,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         # cached[3] (when present) is the session_id the
                         # snapshot was taken for — used to skip the guard
                         # when the active session_id differs (#54947).
-                        _cached_mc = cached[2] if len(cached) > 2 else None
-                        _cached_sid = cached[3] if len(cached) > 3 else None
+                        _cached_mc = cached[2] if cached is not None and len(cached) > 2 else None
+                        _cached_sid = cached[3] if cached is not None and len(cached) > 3 else None
                         # If the snapshot belongs to a different session_id
                         # (same session_key, different conversation), the
                         # message_count comparison is meaningless — the
@@ -18437,19 +18439,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             and _cached_sid != session_id
                         )
                         if (
-                            not _session_id_mismatch
-                            and _cached_mc is not None
-                            and _current_msg_count is not None
-                            and _current_msg_count != _cached_mc
+                            _cache_entry_evicted_for_reseed
+                            or (
+                                not _session_id_mismatch
+                                and _cached_mc is not None
+                                and _current_msg_count is not None
+                                and _current_msg_count != _cached_mc
+                            )
                         ):
                             # Cross-process write detected — discard stale
                             # agent so it rebuilds from fresh DB transcript.
-                            logger.info(
-                                "Agent cache invalidated for session %s: "
-                                "message_count changed (%s -> %s), "
-                                "possible cross-process write",
-                                session_key, _cached_mc, _current_msg_count,
-                            )
+                            if not _cache_entry_evicted_for_reseed:
+                                logger.info(
+                                    "Agent cache invalidated for session %s: "
+                                    "message_count changed (%s -> %s), "
+                                    "possible cross-process write",
+                                    session_key, _cached_mc, _current_msg_count,
+                                )
                             evicted = self._agent_cache.pop(session_key, None)
                             _ev_agent = evicted[0] if isinstance(evicted, tuple) and evicted else None
                             if _ev_agent and _ev_agent is not _AGENT_PENDING_SENTINEL:
