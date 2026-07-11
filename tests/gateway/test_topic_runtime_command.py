@@ -110,3 +110,27 @@ async def test_topic_runtime_status_checks_live_codex_process(monkeypatch):
     reply = await runner._handle_topic_runtime_command(_event("status"))
     assert "Codex thread: stopped" in reply
     assert "active" not in reply
+
+
+@pytest.mark.asyncio
+async def test_topic_runtime_status_prefers_control_plane_binding(monkeypatch):
+    session_key = "agent:main:telegram:group:-1003931971445:7351"
+    config = {"gateway": {"session_model_overrides": {
+        session_key: {"api_mode": "codex_app_server"}
+    }}}
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: config)
+    runner = _runner()
+    runner._running_agents = {}
+    runner.session_store = SimpleNamespace(
+        get_codex_thread_id=lambda _key: "legacy-wrong-thread"
+    )
+    runner._codex_control_runtime = SimpleNamespace(store=SimpleNamespace(
+        get_thread_binding=lambda _key: {
+            "thread_id": "control-thread-123", "state": "active"
+        }
+    ))
+
+    reply = await runner._handle_topic_runtime_command(_event("status"))
+
+    assert "Codex thread: resumable (control-)" in reply
+    assert "legacy-wrong-thread" not in reply

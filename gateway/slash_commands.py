@@ -1697,11 +1697,14 @@ class GatewaySlashCommandsMixin:
             codex_session = getattr(cached, "_codex_session", None) if cached else None
             live_thread_id = getattr(codex_session, "_thread_id", None)
             session_store = getattr(self, "session_store", None)
-            persisted_thread_id = (
-                session_store.get_codex_thread_id(session_key)
-                if session_store is not None
-                else None
-            )
+            persisted_thread_id = None
+            control = getattr(self, "_codex_control_runtime", None)
+            if control is not None:
+                binding = control.store.get_thread_binding(session_key)
+                if binding and binding.get("state") == "active":
+                    persisted_thread_id = binding.get("thread_id")
+            elif session_store is not None:
+                persisted_thread_id = session_store.get_codex_thread_id(session_key)
             thread_id = live_thread_id or persisted_thread_id
             alive = bool(codex_session and codex_session.is_alive())
             turn_running = getattr(self, "_running_agents", {}).get(session_key) is not None
