@@ -89,7 +89,7 @@ def test_only_explicit_important_work_uses_important_tier(service, monkeypatch):
                      importance="important", idempotency_key="important-1"), principal()
     )
     assert captured["tier"] == "important"
-    assert result["model_policy"] == "Sol/xhigh"
+    assert result["model_policy"] == "Sol/high"
     assert result["worker_runtime"] == "codex"
 
 

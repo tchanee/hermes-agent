@@ -193,7 +193,7 @@ class CodexDelegationService:
             goal=goal, context=context, toolsets=toolsets, role=role,
             importance=governed_importance,
             worker_runtime=worker_runtime,
-            model_policy=("Sol/xhigh" if governed_importance == "important" else "Terra/default"),
+            model_policy=("Sol/high" if governed_importance == "important" else "Terra/default"),
             policy_reason=policy_reason,
         )
         self.store.record_audit(

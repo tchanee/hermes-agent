@@ -41,7 +41,7 @@ terminal, file, web, research, and coding work defaults to Codex.
 Runtime selection is durable in `control_delegations.worker_runtime` and is
 included in worker status, handoffs, completion events, and audit records.
 Importance is independent: routine workers use Terra; only gateway-validated
-consequential work uses Sol/xhigh. Existing database rows migrate
+consequential work uses Sol/high. Existing database rows migrate
 conservatively to `hermes`; only newly governed dispatches default to Codex.
 
 After an update, verify both paths:
