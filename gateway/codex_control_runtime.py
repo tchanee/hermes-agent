@@ -63,7 +63,7 @@ class CodexControlRuntime:
             delegations=self.delegations, audit_store=self.store,
         )
         self.memory = CodexMemoryService(store=self.store, memory_store=memory)
-        self.services = CodexServicesService()
+        self.services = CodexServicesService(audit_store=self.store)
         self.socket_path = self.runtime_root / "control.sock"
         if len(str(self.socket_path).encode()) >= 100:
             raise RuntimeError("Hermes control socket path is too long for AF_UNIX")
