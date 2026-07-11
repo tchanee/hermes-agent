@@ -18586,6 +18586,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         agent._codex_control_cleanup = prepared.cleanup
                         agent._codex_control_generation = prepared.generation
                         agent._codex_control_session_id = session_id
+                        agent._codex_initial_topic_context = (
+                            self._codex_control_runtime.handoffs.get(
+                                session_key=session_key,
+                                session_id=session_id,
+                            )
+                        )
                         prepared.bind_agent(agent)
                     else:
                         agent._codex_resume_thread_id = (
