@@ -1018,6 +1018,36 @@ async def test_run_agent_queued_message_does_not_treat_commentary_as_final(monke
 
 
 @pytest.mark.asyncio
+async def test_queued_followup_rebaselines_cache_before_recursive_turn(monkeypatch, tmp_path):
+    refreshed = []
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(
+        gateway_run.GatewayRunner,
+        "_refresh_agent_cache_message_count",
+        lambda _self, session_key, session_id: refreshed.append(
+            (session_key, session_id)
+        ),
+    )
+    QueuedCommentaryAgent.calls = 0
+
+    _adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        QueuedCommentaryAgent,
+        session_id="sess-queued-cache-watermark",
+        pending_text="queued follow-up",
+    )
+
+    assert result["final_response"] == "final response 2"
+    assert refreshed == [
+        (
+            "agent:main:telegram:group:-1001:17585",
+            "sess-queued-cache-watermark",
+        )
+    ]
+
+
+@pytest.mark.asyncio
 async def test_run_agent_defers_background_review_notification_until_release(monkeypatch, tmp_path):
     adapter, result = await _run_with_agent(
         monkeypatch,

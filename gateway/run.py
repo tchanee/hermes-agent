@@ -17157,6 +17157,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     except Exception:
                         pass
 
+                # The outer message handler normally refreshes this watermark
+                # after _run_agent returns. A queued follow-up recurses before
+                # that return, so refresh here after the first turn has flushed
+                # its transcript. Otherwise the next cache lookup mistakes our
+                # own writes for a cross-process update and evicts the live
+                # Codex app-server thread.
+                self._refresh_agent_cache_message_count(session_key, session_id)
                 followup_result = await self._run_agent(
                     message=next_message,
                     context_prompt=context_prompt,
