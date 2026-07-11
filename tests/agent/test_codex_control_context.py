@@ -8,7 +8,8 @@ from agent.codex_control_context import render_codex_stable_policy
 
 def test_stable_policy_excludes_volatile_memory_and_context():
     agent = SimpleNamespace(
-        ephemeral_system_prompt="TOPIC POLICY",
+        ephemeral_system_prompt="UNTRUSTED SESSION METADATA",
+        _codex_trusted_channel_policy="TOPIC POLICY",
         platform="telegram",
         thread_id="7351",
     )
@@ -19,6 +20,7 @@ def test_stable_policy_excludes_volatile_memory_and_context():
     assert "SOUL POLICY" in rendered.developer_instructions
     assert "orchestrator" in rendered.developer_instructions
     assert "TOPIC POLICY" in rendered.developer_instructions
+    assert "UNTRUSTED SESSION METADATA" not in rendered.developer_instructions
     assert "7351" in rendered.developer_instructions
     assert "PROJECT INSTRUCTIONS" not in rendered.developer_instructions
     assert "USER SECRET" not in rendered.developer_instructions
@@ -28,7 +30,7 @@ def test_stable_policy_excludes_volatile_memory_and_context():
 
 def test_stable_policy_fails_closed_on_overflow():
     agent = SimpleNamespace(
-        ephemeral_system_prompt="",
+        _codex_trusted_channel_policy="",
         platform="telegram",
         thread_id="7351",
     )
@@ -40,7 +42,7 @@ def test_stable_policy_fails_closed_on_overflow():
 def test_stable_policy_revision_is_deterministic_and_content_bound():
     def render(text):
         agent = SimpleNamespace(
-            ephemeral_system_prompt="", platform="telegram", thread_id="7351"
+            _codex_trusted_channel_policy="", platform="telegram", thread_id="7351"
         )
         with patch("run_agent.load_soul_md", return_value=text):
             return render_codex_stable_policy(agent)
@@ -51,7 +53,7 @@ def test_stable_policy_revision_is_deterministic_and_content_bound():
 
 def test_native_stable_prompt_bulk_is_never_rendered():
     agent = SimpleNamespace(
-        ephemeral_system_prompt="TOPIC POLICY",
+        _codex_trusted_channel_policy="TOPIC POLICY",
         platform="telegram",
         thread_id="7351",
         _build_system_prompt_parts=lambda: (_ for _ in ()).throw(

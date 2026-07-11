@@ -40,7 +40,9 @@ def render_codex_stable_policy(
     identity = str(run_agent.load_soul_md() or DEFAULT_AGENT_IDENTITY).strip()
     if not identity:
         raise RuntimeError("Hermes stable identity rendered empty")
-    ephemeral = str(getattr(agent, "ephemeral_system_prompt", "") or "").strip()
+    channel_policy = str(
+        getattr(agent, "_codex_trusted_channel_policy", "") or ""
+    ).strip()
     profile = "default"
     try:
         from agent.file_safety import _resolve_active_profile_name
@@ -72,8 +74,8 @@ def render_codex_stable_policy(
         + "\n\n"
         + scope
     )
-    if ephemeral:
-        body += "\n\n[Gateway-authored channel policy]\n" + ephemeral
+    if channel_policy:
+        body += "\n\n[Gateway-authored channel policy]\n" + channel_policy
     encoded = body.encode("utf-8")
     if len(encoded) > max_bytes:
         raise RuntimeError(

@@ -15436,6 +15436,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if self._ephemeral_system_prompt:
                 combined_ephemeral = (combined_ephemeral + "\n\n" + self._ephemeral_system_prompt).strip()
 
+            # Control-plane developer instructions may contain only policy
+            # authored in gateway configuration. ``context_prompt`` includes
+            # dynamic platform/session metadata (including user-controlled
+            # names and topic text), so it must not cross this trust boundary.
+            trusted_codex_policy = event_channel_prompt
+            if self._ephemeral_system_prompt:
+                trusted_codex_policy = (
+                    trusted_codex_policy + "\n\n" + self._ephemeral_system_prompt
+                ).strip()
+
             max_iterations = _current_max_iterations()
 
             try:
@@ -15718,6 +15728,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             render_codex_stable_policy,
                         )
 
+                        agent._codex_trusted_channel_policy = trusted_codex_policy
                         policy = render_codex_stable_policy(agent)
                         agent._codex_developer_instructions = (
                             policy.developer_instructions
