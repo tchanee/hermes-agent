@@ -13,6 +13,8 @@ def test_request_idempotency_and_hash_conflict(tmp_path):
     assert store.accept_request(**args, payload={"goal": "a"})["id"] == first["id"]
     with pytest.raises(IdempotencyConflict):
         store.accept_request(**args, payload={"goal": "b"})
+    audit = store.list_audit(session_id="s")
+    assert [row["event_type"] for row in audit] == ["request_accepted"]
 
 
 def test_concurrent_duplicates_create_one_inbox_row(tmp_path):
@@ -105,6 +107,9 @@ def test_capability_is_scoped_bound_and_revocable(tmp_path):
         with pytest.raises(PermissionError):
             store.validate_capability(token, **kwargs)
     assert store.revoke_capability(row["token_id"])
+    assert [event["event_type"] for event in store.list_audit()] == [
+        "capability_issued", "capability_revoked"
+    ]
     with pytest.raises(PermissionError, match="revoked"):
         store.validate_capability(
             token, audience="hermes-control", required_scope="context.read",

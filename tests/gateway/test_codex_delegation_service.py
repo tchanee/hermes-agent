@@ -123,3 +123,12 @@ def test_spawn_fails_closed_without_bound_parent(service):
     workers, _store = service
     with pytest.raises(RuntimeError, match="parent agent is unavailable"):
         workers.spawn(spawn_params(), principal())
+
+
+def test_frozen_generation_rejects_new_worker_dispatch(service):
+    workers, store = service
+    workers.bind_parent("s1", 2, Parent())
+    workers.freeze_generation("s1", 2, reason="runtime_rollback")
+    with pytest.raises(RuntimeError, match="frozen"):
+        workers.spawn(spawn_params(), principal())
+    assert store.list_audit(session_id="s1")[-1]["event_type"] == "worker_generation_frozen"

@@ -40,6 +40,7 @@ class CodexDelegationService:
     def __init__(self, *, store: CodexControlStore) -> None:
         self.store = store
         self._parents: dict[tuple[str, int], Any] = {}
+        self._frozen_generations: set[tuple[str, int]] = set()
         self._lock = threading.RLock()
         from tools.async_delegation import register_lifecycle_observer
         register_lifecycle_observer(self._on_lifecycle)
@@ -98,6 +99,24 @@ class CodexDelegationService:
         with self._lock:
             self._parents[(session_id, generation)] = agent
 
+    def freeze_generation(self, session_id: str, generation: int, *, reason: str) -> None:
+        key = (session_id, int(generation))
+        with self._lock:
+            self._frozen_generations.add(key)
+        self.store.record_audit(
+            event_type="worker_generation_frozen", session_id=session_id,
+            generation=int(generation), detail={"reason": reason},
+        )
+
+    def unfreeze_generation(self, session_id: str, generation: int, *, reason: str) -> None:
+        key = (session_id, int(generation))
+        with self._lock:
+            self._frozen_generations.discard(key)
+        self.store.record_audit(
+            event_type="worker_generation_unfrozen", session_id=session_id,
+            generation=int(generation), detail={"reason": reason},
+        )
+
     def unbind_parent(self, session_id: str, generation: int, agent: Any) -> None:
         with self._lock:
             key = (session_id, generation)
@@ -124,7 +143,10 @@ class CodexDelegationService:
         if not idempotency_key or len(idempotency_key) > 128:
             raise ValueError("idempotency_key is required and limited to 128 characters")
 
+        generation_key = (principal["session_id"], int(principal["generation"]))
         with self._lock:
+            if generation_key in self._frozen_generations:
+                raise RuntimeError("worker dispatch is frozen for runtime transition")
             parent = self._parents.get((principal["session_id"], int(principal["generation"])))
         if parent is None:
             raise RuntimeError("responsive parent agent is unavailable for this session generation")
@@ -158,6 +180,13 @@ class CodexDelegationService:
             importance=governed_importance,
             model_policy="Sol/xhigh" if governed_importance == "important" else "Terra/default",
             policy_reason=policy_reason,
+        )
+        self.store.record_audit(
+            event_type="worker_governed", principal_id=principal["principal_id"],
+            profile=principal["profile"], session_id=principal["session_id"],
+            generation=int(principal["generation"]),
+            detail={"delegation_id": delegation_id, "requested": importance,
+                    "governed": governed_importance, "reason": policy_reason},
         )
 
         from tools.delegate_tool import delegate_task

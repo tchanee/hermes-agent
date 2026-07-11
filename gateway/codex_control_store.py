@@ -55,6 +55,47 @@ class CodexControlStore:
         finally:
             conn.close()
 
+    @staticmethod
+    def _insert_audit(
+        conn: sqlite3.Connection, *, event_type: str,
+        principal_id: Optional[str] = None, profile: Optional[str] = None,
+        session_id: Optional[str] = None, generation: Optional[int] = None,
+        detail: Any = None,
+    ) -> None:
+        conn.execute(
+            """INSERT INTO control_audit
+            (event_type,principal_id,profile,session_id,generation,detail_json,created_at)
+            VALUES (?,?,?,?,?,?,?)""",
+            (
+                event_type, principal_id, profile, session_id, generation,
+                canonical_json(detail if detail is not None else {}), time.time(),
+            ),
+        )
+
+    def record_audit(self, *, event_type: str, principal_id: Optional[str] = None,
+                     profile: Optional[str] = None, session_id: Optional[str] = None,
+                     generation: Optional[int] = None, detail: Any = None) -> None:
+        with self.transaction() as conn:
+            self._insert_audit(
+                conn, event_type=event_type, principal_id=principal_id,
+                profile=profile, session_id=session_id, generation=generation,
+                detail=detail,
+            )
+
+    def list_audit(self, *, session_id: Optional[str] = None) -> list[dict[str, Any]]:
+        conn = self._connect()
+        try:
+            if session_id is None:
+                rows = conn.execute("SELECT * FROM control_audit ORDER BY id").fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM control_audit WHERE session_id=? ORDER BY id",
+                    (session_id,),
+                ).fetchall()
+            return [dict(row) for row in rows]
+        finally:
+            conn.close()
+
     def _init_schema(self) -> None:
         conn = self._connect()
         try:
@@ -264,6 +305,11 @@ class CodexControlStore:
             row = conn.execute(
                 "SELECT * FROM control_capabilities WHERE token_id=?", (token_id,)
             ).fetchone()
+            self._insert_audit(
+                conn, event_type="capability_issued", principal_id=principal_id,
+                profile=profile, session_id=session_id, generation=generation,
+                detail={"token_id": token_id, "scopes": sorted(set(scopes))},
+            )
         return f"{token_id}.{secret}", dict(row)
 
     def validate_capability(
@@ -336,6 +382,11 @@ class CodexControlStore:
                 WHERE token_id=? AND state='active'""",
                 (now, token_id),
             )
+            if cur.rowcount == 1:
+                self._insert_audit(
+                    conn, event_type="capability_revoked",
+                    detail={"token_id": token_id},
+                )
             return cur.rowcount == 1
 
     def accept_request(
@@ -369,6 +420,12 @@ class CodexControlStore:
                  request_hash,state,created_at,updated_at)
                 VALUES (?,?,?,?,?,?,?,'accepted',?,?)""",
                 (*key, digest, now, now),
+            )
+            self._insert_audit(
+                conn, event_type="request_accepted", principal_id=principal_id,
+                profile=profile, session_id=session_id, generation=generation,
+                detail={"inbox_id": cur.lastrowid, "method": method,
+                        "request_hash": digest},
             )
             return dict(conn.execute("SELECT * FROM control_inbox WHERE id=?", (cur.lastrowid,)).fetchone())
 

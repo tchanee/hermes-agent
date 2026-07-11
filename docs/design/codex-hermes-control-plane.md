@@ -365,12 +365,16 @@ passing the normal gate.
 
 ## Rollback State Machine
 
-Rollback is not merely deleting `api_mode`. The gateway first fences the active
-generation, interrupts or classifies the foreground turn, revokes capabilities,
-freezes new worker dispatch, records the disposition of each scoped worker,
-drains/deduplicates pending outbox events, verifies projected Hermes transcript
-compatibility, creates a bounded continuity handoff, and only then changes the
-runtime override. An ambiguous user turn is reported and never replayed.
+Rollback is not merely deleting `api_mode`. Runtime switching is rejected while
+a foreground turn is active. For an idle topic, the gateway freezes new worker
+dispatch for the active generation, creates and verifies a bounded continuity
+handoff containing active worker handles, prepares lineage, then fences the
+Codex binding before atomically changing the topic override. If handoff creation
+fails, dispatch is unfrozen and the old binding remains active. Capability
+validation fails after fencing. Existing workers are not killed: their durable
+outbox completions remain routed to the unchanged Hermes session ID and can
+therefore re-enter the restored Hermes loop. An ambiguous user turn is never
+replayed.
 
 Rollback tests include active native tools, pending approval, running workers,
 late worker completion, and a crash between fencing and override persistence.

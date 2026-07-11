@@ -122,3 +122,30 @@ def test_reseed_failure_keeps_old_binding_active(runtime, monkeypatch):
     with pytest.raises(RuntimeError, match="summary failed"):
         runtime.prepare_reseed(session_key="topic", session_id="s1", generation=1)
     assert runtime.store.get_thread_binding("topic")["state"] == "active"
+
+
+def test_runtime_rollback_freezes_dispatch_and_records_audit(runtime):
+    first = runtime.prepare_session(
+        session_key="topic", session_id="s1", policy_revision="r1"
+    )
+    assert first.persist_thread("thread-1")
+    result = runtime.prepare_runtime_rollback(session_key="topic", session_id="s1")
+    assert result["next_generation"] == 2
+    assert ("s1", 1) in runtime.delegations._frozen_generations
+    events = [row["event_type"] for row in runtime.store.list_audit(session_id="s1")]
+    assert "worker_generation_frozen" in events
+    assert "runtime_rollback_prepared" in events
+
+
+def test_failed_runtime_rollback_unfreezes_dispatch(runtime, monkeypatch):
+    first = runtime.prepare_session(
+        session_key="topic", session_id="s1", policy_revision="r1"
+    )
+    assert first.persist_thread("thread-1")
+    monkeypatch.setattr(
+        runtime.handoffs, "build",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("summary failed")),
+    )
+    with pytest.raises(RuntimeError, match="summary failed"):
+        runtime.prepare_runtime_rollback(session_key="topic", session_id="s1")
+    assert ("s1", 1) not in runtime.delegations._frozen_generations

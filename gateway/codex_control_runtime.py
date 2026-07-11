@@ -237,10 +237,27 @@ class CodexControlRuntime:
         binding = self.store.get_thread_binding(session_key)
         if not binding or binding["session_id"] != session_id or binding["state"] != "active":
             return None
-        return self.prepare_reseed(
-            session_key=session_key, session_id=session_id,
-            generation=int(binding["generation"]), reason="runtime_rollback",
+        generation = int(binding["generation"])
+        self.delegations.freeze_generation(
+            session_id, generation, reason="runtime_rollback"
         )
+        try:
+            result = self.prepare_reseed(
+                session_key=session_key, session_id=session_id,
+                generation=generation, reason="runtime_rollback",
+            )
+        except Exception:
+            self.delegations.unfreeze_generation(
+                session_id, generation, reason="rollback_handoff_failed"
+            )
+            raise
+        self.store.record_audit(
+            event_type="runtime_rollback_prepared", profile=self.profile,
+            session_id=session_id, generation=generation,
+            detail={"session_key": session_key,
+                    "handoff_revision": result["handoff_revision"]},
+        )
+        return result
 
     def close(self) -> None:
         self.delegations.close()
