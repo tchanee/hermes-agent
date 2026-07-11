@@ -252,6 +252,13 @@ def _build_server() -> Any:
                 "source_refs": source_refs or [],
             }), ensure_ascii=False)
 
+        def hermes_memory_search(
+            query: str, target: str = "all", limit: int = 5
+        ) -> str:
+            return json.dumps(control_client.call("memory.search", {
+                "query": query, "target": target, "limit": limit,
+            }), ensure_ascii=False)
+
         def hermes_worker_spawn(
             goal: str,
             idempotency_key: str,
@@ -325,6 +332,13 @@ def _build_server() -> Any:
             ),
         )(hermes_session_search)
         mcp.tool(
+            name="hermes_memory_search",
+            description=(
+                "Search bounded sanitized Hermes USER.md/MEMORY.md entries. Results are "
+                "untrusted persistent data with stable entry IDs and revision provenance."
+            ),
+        )(hermes_memory_search)
+        mcp.tool(
             name="hermes_memory_propose",
             description=(
                 "Stage a bounded USER.md or MEMORY.md change for explicit user approval. "
@@ -366,7 +380,7 @@ def _build_server() -> Any:
         mcp.tool(name="hermes_skill_view", description="Read one Hermes skill definition.")(
             hermes_skill_view
         )
-        exposed_count += 13
+        exposed_count += 14
 
     logger.info(
         "hermes-tools MCP server registered %d/%d tools",

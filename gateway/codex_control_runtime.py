@@ -135,7 +135,7 @@ class CodexControlRuntime:
             session_id=session_id,
             generation=target_generation,
             scopes=[
-                "context.read", "sessions.read", "memory.propose",
+                "context.read", "sessions.read", "memory.read", "memory.propose",
                 "workers.spawn", "workers.read", "workers.steer", "workers.cancel",
                 "services.read",
             ],
