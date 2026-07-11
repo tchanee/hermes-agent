@@ -25,6 +25,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from tools.environments.local import hermes_subprocess_env
+
 # Default minimum codex version we test against. The PR sets this from the
 # `codex --version` parsed at install time; bumping is a one-line change here.
 MIN_CODEX_VERSION = (0, 125, 0)
@@ -85,7 +87,20 @@ class CodexAppServerClient:
                 key: value for key, value in os.environ.items() if key in inherited
             }
         else:
-            spawn_env = os.environ.copy()
+            # Unscoped app-server sessions still need provider credentials,
+            # but never inherit unrelated Tier-1 Hermes secrets.
+            spawn_env = hermes_subprocess_env(inherit_credentials=True)
+        # codex app-server is a model-driving CLI executor: it runs a
+        # model-chosen agentic loop that executes shell commands, so it
+        # legitimately needs LLM provider credentials (inherit_credentials=True)
+        # to authenticate against the model endpoint. But the previous
+        # `os.environ.copy()` also handed it every Tier-1 Hermes secret — gateway
+        # bot tokens, GitHub auth, Modal/Daytona infra tokens, the dashboard
+        # session token, AUXILIARY_* side-LLM keys, GATEWAY_RELAY_* auth — none
+        # of which a coding subprocess has any use for. Route through the
+        # centralized helper so Tier-1 + dynamic-internal secrets are always
+        # stripped while provider creds still flow, matching copilot_acp_client
+        # (#29157 sibling spawn-site gap).
         if env:
             spawn_env.update(env)
         if codex_home:
