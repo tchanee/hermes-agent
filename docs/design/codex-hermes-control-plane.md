@@ -431,13 +431,36 @@ duplicate-request idempotency.
 Phase 4 (verified through forced runtime-loss reseed): enable handoff compaction/reseed under an artificially low test
 threshold, then restore the production threshold after continuity checks.
 
-Phase 5: after the remaining live gates pass, enable
+Phase 5 (verified 2026-07-11): enable
 `gateway.codex_control_plane.telegram_topic_default` for foreground Telegram
 topics. Exact per-topic `api_mode: codex_responses` overrides remain the
 rollback mechanism. This default is consumed only by foreground turn routing;
 cron, compression helpers, `/background`, and detached workers retain their
 Hermes-owned runtime and policy. Roll out with an explicit topic inventory and
 retain one rollback canary rather than bulk-editing individual topic entries.
+
+### Live Evidence (2026-07-11)
+
+- Topic 7351 and topic 2 ran as distinct Codex app-server bindings. Topic 2
+  could neither inspect nor cancel topic 7351's worker; mutation failed closed
+  with a cross-generation `PermissionError`.
+- An approved USER-memory proposal was applied with immutable Telegram actor
+  and message provenance, then appeared in a fresh topic bootstrap.
+- App-server projections persist one inbound user row with its Telegram
+  message ID plus assistant/tool rows. Topic 2 canary message `7475` and topic
+  3 default-routing message `7488` verified this contract.
+- Topic 2 rollback reached durable `applied` state, fenced generation 3,
+  created a verified handoff, revoked the old capability, and restored the
+  Responses-backed Hermes loop. The restored loop answered the pre-switch
+  continuity canary correctly in 5.6 seconds.
+- Rollback testing exposed legacy app-server call IDs longer than the Responses
+  limit and dotted MCP function names. Both future projection and legacy
+  replay are now deterministically normalized; the actual topic 2 transcript
+  passes Responses preflight validation.
+- `telegram_topic_default: true` created a fresh active app-server binding for
+  topic 3 without an explicit `api_mode`. Telegram remained connected, cron
+  heartbeat/last-success advanced after restart, and the embedded Kanban
+  dispatcher reacquired its singleton lock.
 
 ## Verification Gates
 
