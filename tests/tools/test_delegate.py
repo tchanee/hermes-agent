@@ -144,6 +144,9 @@ class TestChildSystemPrompt(unittest.TestCase):
         self.assertIn("Fix the tests", prompt)
         self.assertIn("YOUR TASK", prompt)
         self.assertNotIn("CONTEXT", prompt)
+        self.assertIn("Do not broaden targets", prompt)
+        self.assertIn("Never search for, copy, move", prompt)
+        self.assertIn("Claim completion only", prompt)
 
     def test_goal_with_context(self):
         prompt = _build_child_system_prompt("Fix the tests", "Error: assertion failed in test_foo.py line 42")
