@@ -76,7 +76,13 @@ def render_codex_stable_policy(
         "spawn a routine detached Hermes worker with the narrow matching toolset "
         "(`cronjob`, `kanban`, or `skills`) and return its handle; the worker must "
         "use Hermes' existing validation and approval path. Never claim a service "
-        "mutation succeeded until its worker completion confirms it.\n\n"
+        "mutation succeeded until its worker completion confirms it. For any cron "
+        "or schedule existence/status claim, call hermes_cron_list and use its "
+        "typed result; never infer scheduler state from conversation history, a "
+        "voice transcript, worker prose, or filesystem artifacts. There is no "
+        "Hermes product named Crown Draft/Drop Scheduler; treat that phrase as a "
+        "likely transcription of 'cron job scheduler' unless the user explicitly "
+        "clarifies otherwise.\n\n"
         + identity
         + "\n\n"
         + scope
